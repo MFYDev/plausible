@@ -440,7 +440,9 @@ defmodule PlausibleWeb.AuthControllerTest do
 
     test "shows the form", %{conn: conn} do
       conn = get(conn, "/settings")
-      assert html_response(conn, 200) =~ "Account settings"
+      assert resp = html_response(conn, 200)
+      assert resp =~ "Change account name"
+      assert resp =~ "Change email address"
     end
 
     test "shows subscription", %{conn: conn, user: user} do
@@ -686,6 +688,153 @@ defmodule PlausibleWeb.AuthControllerTest do
     end
   end
 
+  describe "PUT /settings/email" do
+    setup [:create_user, :log_in]
+
+    test "updates email and forces reverification", %{conn: conn, user: user} do
+      password = "very-long-very-secret-123"
+
+      user
+      |> User.set_password(password)
+      |> Repo.update!()
+
+      assert user.email_verified
+
+      conn =
+        put(conn, "/settings/email", %{
+          "user" => %{"email" => "new" <> user.email, "password" => password}
+        })
+
+      assert redirected_to(conn, 302) == Routes.auth_path(conn, :activate)
+
+      updated_user = Repo.reload!(user)
+
+      assert updated_user.email == "new" <> user.email
+      assert updated_user.previous_email == user.email
+      refute updated_user.email_verified
+
+      assert_delivered_email_matches(%{to: [{_, user_email}], subject: subject})
+      assert user_email == updated_user.email
+      assert subject =~ "is your Plausible email verification code"
+    end
+
+    test "renders form with error on no fields filled", %{conn: conn} do
+      conn = put(conn, "/settings/email", %{"user" => %{}})
+
+      assert html_response(conn, 200) =~ "can&#39;t be blank"
+    end
+
+    test "renders form with error on invalid password", %{conn: conn, user: user} do
+      conn =
+        put(conn, "/settings/email", %{
+          "user" => %{"password" => "invalid", "email" => "new" <> user.email}
+        })
+
+      assert html_response(conn, 200) =~ "is invalid"
+    end
+
+    test "renders form with error on already taken email", %{conn: conn, user: user} do
+      other_user = insert(:user)
+
+      password = "very-long-very-secret-123"
+
+      user
+      |> User.set_password(password)
+      |> Repo.update!()
+
+      conn =
+        put(conn, "/settings/email", %{
+          "user" => %{"password" => password, "email" => other_user.email}
+        })
+
+      assert html_response(conn, 200) =~ "has already been taken"
+    end
+
+    test "renders form with error when email is identical with the current one", %{
+      conn: conn,
+      user: user
+    } do
+      password = "very-long-very-secret-123"
+
+      user
+      |> User.set_password(password)
+      |> Repo.update!()
+
+      conn =
+        put(conn, "/settings/email", %{
+          "user" => %{"password" => password, "email" => user.email}
+        })
+
+      assert html_response(conn, 200) =~ "can&#39;t be the same"
+    end
+  end
+
+  describe "POST /settings/email/cancel" do
+    setup [:create_user, :log_in]
+
+    test "cancels email reverification in progress", %{conn: conn, user: user} do
+      user =
+        user
+        |> Ecto.Changeset.change(
+          email_verified: false,
+          email: "new" <> user.email,
+          previous_email: user.email
+        )
+        |> Repo.update!()
+
+      conn = post(conn, "/settings/email/cancel")
+
+      assert redirected_to(conn, 302) ==
+               Routes.auth_path(conn, :user_settings) <> "#change-email-address"
+
+      updated_user = Repo.reload!(user)
+
+      assert updated_user.email_verified
+      assert updated_user.email == user.previous_email
+      refute updated_user.previous_email
+    end
+
+    test "fails to cancel reverification when previous email is already retaken", %{
+      conn: conn,
+      user: user
+    } do
+      user =
+        user
+        |> Ecto.Changeset.change(
+          email_verified: false,
+          email: "new" <> user.email,
+          previous_email: user.email
+        )
+        |> Repo.update!()
+
+      _other_user = insert(:user, email: user.previous_email)
+
+      conn = post(conn, "/settings/email/cancel")
+
+      assert redirected_to(conn, 302) == Routes.auth_path(conn, :activate_form)
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~
+               "Could not cancel email update"
+    end
+
+    test "crashes when previous email is empty on cancel (should not happen)", %{
+      conn: conn,
+      user: user
+    } do
+      user
+      |> Ecto.Changeset.change(
+        email_verified: false,
+        email: "new" <> user.email,
+        previous_email: nil
+      )
+      |> Repo.update!()
+
+      assert_raise RuntimeError, ~r/Previous email is empty for user/, fn ->
+        post(conn, "/settings/email/cancel")
+      end
+    end
+  end
+
   describe "DELETE /me" do
     setup [:create_user, :log_in, :create_new_site]
     use Plausible.Repo
@@ -753,8 +902,7 @@ defmodule PlausibleWeb.AuthControllerTest do
     import Ecto.Query
 
     test "can create an API key", %{conn: conn, user: user} do
-      site = insert(:site)
-      insert(:site_membership, site: site, user: user, role: "owner")
+      insert(:site, memberships: [build(:site_membership, user: user, role: "owner")])
 
       conn =
         post(conn, "/settings/api-keys", %{
@@ -771,8 +919,7 @@ defmodule PlausibleWeb.AuthControllerTest do
     end
 
     test "cannot create a duplicate API key", %{conn: conn, user: user} do
-      site = insert(:site)
-      insert(:site_membership, site: site, user: user, role: "owner")
+      insert(:site, memberships: [build(:site_membership, user: user, role: "owner")])
 
       conn =
         post(conn, "/settings/api-keys", %{
@@ -796,12 +943,12 @@ defmodule PlausibleWeb.AuthControllerTest do
     end
 
     test "can't create api key into another site", %{conn: conn, user: me} do
-      my_site = insert(:site)
-      insert(:site_membership, site: my_site, user: me, role: "owner")
+      _my_site = insert(:site, memberships: [build(:site_membership, user: me, role: "owner")])
 
       other_user = insert(:user)
-      other_site = insert(:site)
-      insert(:site_membership, site: other_site, user: other_user, role: "owner")
+
+      _other_site =
+        insert(:site, memberships: [build(:site_membership, user: other_user, role: "owner")])
 
       conn =
         post(conn, "/settings/api-keys", %{
@@ -824,17 +971,15 @@ defmodule PlausibleWeb.AuthControllerTest do
 
     test "can't delete api key that doesn't belong to me", %{conn: conn} do
       other_user = insert(:user)
-      insert(:site_membership, site: insert(:site), user: other_user, role: "owner")
+      insert(:site, memberships: [build(:site_membership, user: other_user, role: "owner")])
 
       assert {:ok, %ApiKey{} = api_key} =
                %ApiKey{user_id: other_user.id}
                |> ApiKey.changeset(%{"name" => "other user's key"})
                |> Repo.insert()
 
-      assert_raise Ecto.NoResultsError, fn ->
-        delete(conn, "/settings/api-keys/#{api_key.id}")
-      end
-
+      conn = delete(conn, "/settings/api-keys/#{api_key.id}")
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) == "Could not find API Key to delete"
       assert Repo.get(ApiKey, api_key.id)
     end
   end
