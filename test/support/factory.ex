@@ -107,6 +107,14 @@ defmodule Plausible.Factory do
     }
   end
 
+  def growth_subscription_factory do
+    build(:subscription, paddle_plan_id: "857097")
+  end
+
+  def business_subscription_factory do
+    build(:subscription, paddle_plan_id: "857087")
+  end
+
   def enterprise_plan_factory do
     %Plausible.Billing.EnterprisePlan{
       paddle_plan_id: sequence(:paddle_plan_id, &"plan-#{&1}"),
@@ -119,7 +127,7 @@ defmodule Plausible.Factory do
 
   def google_auth_factory do
     %Plausible.Site.GoogleAuth{
-      email: sequence(:google_auth_email, &"email-#{&1}@email.com"),
+      email: sequence(:google_auth_email, &"email-#{&1}@example.com"),
       refresh_token: "123",
       access_token: "123",
       expires: Timex.now() |> Timex.shift(days: 1)
