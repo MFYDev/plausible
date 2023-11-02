@@ -102,7 +102,6 @@ defmodule Plausible.MixProject do
       {:phoenix_ecto, "~> 4.0"},
       {:phoenix_html, "~> 3.3", override: true},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
-      {:phoenix_pagination, "~> 0.7.0"},
       {:phoenix_pubsub, "~> 2.0"},
       {:phoenix_live_view, "~> 0.18"},
       {:php_serializer, "~> 2.0"},
@@ -124,23 +123,30 @@ defmodule Plausible.MixProject do
       {:zxcvbn, git: "https://github.com/techgaun/zxcvbn-elixir.git"},
       {:open_api_spex, "~> 3.18"},
       {:joken, "~> 2.5"},
-      {:paginator, git: "https://github.com/duffelhq/paginator.git"}
+      {:paginator, git: "https://github.com/duffelhq/paginator.git"},
+      {:scrivener_ecto, "~> 2.0"},
+      {:esbuild, "~> 0.7", runtime: Mix.env() == :dev},
+      {:tailwind, "~> 0.2.0", runtime: Mix.env() == :dev}
     ]
   end
 
   defp aliases do
     [
+      setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate", "test", "clean_clickhouse"],
-      sentry_recompile: ["compile", "deps.compile sentry --force"]
+      sentry_recompile: ["compile", "deps.compile sentry --force"],
+      "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
+      "assets.build": ["tailwind default", "esbuild default"],
+      "assets.deploy": ["tailwind default --minify", "esbuild default --minify", "phx.digest"]
     ]
   end
 
   defp docs do
     [
       main: "readme",
-      logo: "assets/static/images/icon/plausible_favicon.png",
+      logo: "priv/static/images/icon/plausible_favicon.png",
       extras:
         Path.wildcard("guides/**/*.md") ++
           [
