@@ -71,7 +71,7 @@ defmodule PlausibleWeb.Live.RegisterForm do
         <%= if @is_selfhost or @live_action == :register_from_invitation_form do %>
           Register your Plausible Analytics account
         <% else %>
-          Register your 30-day unlimited-use free trial
+          Register your 30-day free trial
         <% end %>
       </h1>
       <div class="text-xl font-medium">Set up privacy-friendly analytics with just a few clicks</div>
@@ -167,10 +167,9 @@ defmodule PlausibleWeb.Live.RegisterForm do
           else
             "Start my free trial →"
           end %>
-
-        <button id="register" type="submit" class="button mt-4 w-full">
+        <PlausibleWeb.Components.Generic.button id="register" type="submit" class="mt-4 w-full">
           <%= submit_text %>
-        </button>
+        </PlausibleWeb.Components.Generic.button>
 
         <p class="text-center text-gray-600 dark:text-gray-500  text-xs mt-4">
           Already have an account? <%= link("Log in",
