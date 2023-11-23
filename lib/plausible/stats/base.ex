@@ -1,5 +1,6 @@
 defmodule Plausible.Stats.Base do
   use Plausible.ClickhouseRepo
+  use Plausible
   alias Plausible.Stats.{Query, Filters}
   import Ecto.Query
 
@@ -30,7 +31,6 @@ defmodule Plausible.Stats.Base do
     end
   end
 
-  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def query_events(site, query) do
     {first_datetime, last_datetime} = utc_boundaries(query, site)
 
@@ -301,24 +301,18 @@ defmodule Plausible.Stats.Base do
     |> select_event_metrics(rest)
   end
 
-  def select_event_metrics(q, [:total_revenue | rest]) do
-    from(e in q,
-      select_merge: %{
-        total_revenue:
-          fragment("toDecimal64(sum(?) * any(_sample_factor), 3)", e.revenue_reporting_amount)
-      }
-    )
-    |> select_event_metrics(rest)
-  end
+  on_full_build do
+    def select_event_metrics(q, [:total_revenue | rest]) do
+      q
+      |> Plausible.Stats.Goal.Revenue.total_revenue_query()
+      |> select_event_metrics(rest)
+    end
 
-  def select_event_metrics(q, [:average_revenue | rest]) do
-    from(e in q,
-      select_merge: %{
-        average_revenue:
-          fragment("toDecimal64(avg(?) * any(_sample_factor), 3)", e.revenue_reporting_amount)
-      }
-    )
-    |> select_event_metrics(rest)
+    def select_event_metrics(q, [:average_revenue | rest]) do
+      q
+      |> Plausible.Stats.Goal.Revenue.average_revenue_query()
+      |> select_event_metrics(rest)
+    end
   end
 
   def select_event_metrics(q, [:sample_percent | rest]) do
@@ -331,7 +325,7 @@ defmodule Plausible.Stats.Base do
     |> select_event_metrics(rest)
   end
 
-  def select_event_metrics(_, [unknown | _]), do: raise("Unknown metric " <> unknown)
+  def select_event_metrics(_, [unknown | _]), do: raise("Unknown metric: #{unknown}")
 
   def select_session_metrics(q, [], _query), do: q
 
@@ -424,7 +418,6 @@ defmodule Plausible.Stats.Base do
     |> select_session_metrics(rest, query)
   end
 
-  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def dynamic_filter_condition(query, filter_key, db_field) do
     case query && query.filters && query.filters[filter_key] do
       {:is, value} ->
