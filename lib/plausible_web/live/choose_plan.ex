@@ -37,8 +37,8 @@ defmodule PlausibleWeb.Live.ChoosePlan do
       |> assign_new(:owned_tier, fn %{owned_plan: owned_plan} ->
         if owned_plan, do: Map.get(owned_plan, :kind), else: nil
       end)
-      |> assign_new(:recommended_tier, fn %{owned_plan: owned_plan, user: user} ->
-        if owned_plan, do: nil, else: Plans.suggest_tier(user)
+      |> assign_new(:recommended_tier, fn %{owned_plan: owned_plan, user: user, usage: usage} ->
+        if owned_plan || usage.sites == 0, do: nil, else: Plans.suggest_tier(user)
       end)
       |> assign_new(:current_interval, fn %{user: user} ->
         current_user_subscription_interval(user.subscription)
@@ -97,8 +97,9 @@ defmodule PlausibleWeb.Live.ChoosePlan do
     ~H"""
     <div class="bg-gray-100 dark:bg-gray-900 pt-1 pb-12 sm:pb-16 text-gray-900 dark:text-gray-100">
       <div class="mx-auto max-w-7xl px-6 lg:px-20">
-        <.subscription_past_due_notice class="pb-2" subscription={@user.subscription} />
-        <.subscription_paused_notice class="pb-2" subscription={@user.subscription} />
+        <.subscription_past_due_notice class="pb-6" subscription={@user.subscription} />
+        <.subscription_paused_notice class="pb-6" subscription={@user.subscription} />
+        <.upgrade_ineligible_notice :if={@usage.sites == 0} />
         <div class="mx-auto max-w-4xl text-center">
           <p class="text-4xl font-bold tracking-tight lg:text-5xl">
             <%= if @owned_plan,
@@ -361,6 +362,9 @@ defmodule PlausibleWeb.Live.ChoosePlan do
 
     {checkout_disabled, disabled_message} =
       cond do
+        assigns.usage.sites == 0 ->
+          {true, nil}
+
         change_plan_link_text == "Currently on this plan" && not subscription_deleted ->
           {true, nil}
 
@@ -739,29 +743,34 @@ defmodule PlausibleWeb.Live.ChoosePlan do
     [
       team_member_limit_benefit(plan),
       site_limit_benefit(plan),
+      data_retention_benefit(plan),
       "Intuitive, fast and privacy-friendly dashboard",
       "Email/Slack reports",
       "Google Analytics import"
     ]
     |> Kernel.++(feature_benefits(plan))
+    |> Enum.filter(& &1)
   end
 
   defp business_benefits(plan, growth_benefits) do
     [
       "Everything in Growth",
       team_member_limit_benefit(plan),
-      site_limit_benefit(plan)
+      site_limit_benefit(plan),
+      data_retention_benefit(plan)
     ]
     |> Kernel.++(feature_benefits(plan))
     |> Kernel.--(growth_benefits)
     |> Kernel.++(["Priority support"])
+    |> Enum.filter(& &1)
   end
 
   defp enterprise_benefits(business_benefits) do
     team_members =
-      if "Up to 10 team members" in business_benefits,
-        do: "10+ team members",
-        else: nil
+      if "Up to 10 team members" in business_benefits, do: "10+ team members"
+
+    data_retention =
+      if "5 years of data retention" in business_benefits, do: "5+ years of data retention"
 
     [
       "Everything in Business",
@@ -769,9 +778,14 @@ defmodule PlausibleWeb.Live.ChoosePlan do
       "50+ sites",
       "600+ Stats API requests per hour",
       &sites_api_benefit/1,
+      data_retention,
       "Technical onboarding"
     ]
     |> Enum.filter(& &1)
+  end
+
+  defp data_retention_benefit(%Plan{} = plan) do
+    if plan.data_retention_in_years, do: "#{plan.data_retention_in_years} years of data retention"
   end
 
   defp team_member_limit_benefit(%Plan{} = plan) do
