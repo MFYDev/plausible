@@ -2,7 +2,7 @@ defmodule PlausibleWeb.Components.Generic do
   @moduledoc """
   Generic reusable components
   """
-  use Phoenix.Component
+  use Phoenix.Component, global_prefixes: ~w(x-)
 
   @notice_themes %{
     yellow: %{
@@ -68,7 +68,7 @@ defmodule PlausibleWeb.Components.Generic do
   def docs_info(assigns) do
     ~H"""
     <a href={"https://plausible.io/docs/#{@slug}"} rel="noreferrer" target="_blank">
-      <Heroicons.information_circle class="text-gray-400 w-6 h-6 absolute top-0 right-0 text-gray-400" />
+      <Heroicons.information_circle class="text-gray-400 w-6 h-6 absolute top-0 right-0" />
     </a>
     """
   end
@@ -144,7 +144,7 @@ defmodule PlausibleWeb.Components.Generic do
     <.unstyled_link
       new_tab={@new_tab}
       href={@href}
-      class="text-indigo-600 hover:text-indigo-700 dark:text-indigo-500 dark:hover:text-indigo-600"
+      class={"text-indigo-600 hover:text-indigo-700 dark:text-indigo-500 dark:hover:text-indigo-600 " <> @class}
     >
       <%= render_slot(@inner_block) %>
     </.unstyled_link>
@@ -161,36 +161,28 @@ defmodule PlausibleWeb.Components.Generic do
 
   def dropdown(assigns) do
     ~H"""
-    <div class="flex justify-center">
+    <div
+      x-data="dropdown"
+      x-on:keydown.escape.prevent.stop="close($refs.button)"
+      x-on:focusin.window="! $refs.panel.contains($event.target) && close()"
+    >
+      <button x-ref="button" x-on:click="toggle()" type="button" class={List.first(@button).class}>
+        <%= render_slot(List.first(@button)) %>
+      </button>
       <div
-        x-data="dropdown"
-        x-on:keydown.escape.prevent.stop="close($refs.button)"
-        x-on:focusin.window="! $refs.panel.contains($event.target) && close()"
-        x-id="['dropdown-button']"
-        class="relative"
+        x-ref="panel"
+        x-show="open"
+        x-transition:enter="transition ease-out duration-100"
+        x-transition:enter-start="opacity-0 scale-95"
+        x-transition:enter-end="opacity-100 scale-100"
+        x-transition:leave="transition ease-in duration-75"
+        x-transition:leave-start="opacity-100 scale-100"
+        x-transition:leave-end="opacity-0 scale-95"
+        x-on:click.outside="close($refs.button)"
+        style="display: none;"
+        class={List.first(@panel).class}
       >
-        <button
-          x-ref="button"
-          x-on:click="toggle()"
-          x-bind:aria-expanded="open"
-          x-bind:aria-controls="$id('dropdown-button')"
-          type="button"
-          class={List.first(@button).class}
-        >
-          <%= render_slot(List.first(@button)) %>
-        </button>
-        <div
-          x-ref="panel"
-          x-show="open"
-          x-transition.origin.top.left
-          x-on:click.outside="close($refs.button)"
-          x-on:click="onPanelClick"
-          x-bind:id="$id('dropdown-button')"
-          style="display: none;"
-          class={List.first(@panel).class}
-        >
-          <%= render_slot(List.first(@panel)) %>
-        </div>
+        <%= render_slot(List.first(@panel)) %>
       </div>
     </div>
     """
@@ -198,15 +190,24 @@ defmodule PlausibleWeb.Components.Generic do
 
   attr :href, :string, required: true
   attr :new_tab, :boolean, default: false
+  attr :rest, :global
   slot :inner_block, required: true
 
   def dropdown_link(assigns) do
+    class =
+      "w-full inline-flex text-gray-700 dark:text-gray-300 px-3.5 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-100"
+
+    class =
+      if assigns.new_tab do
+        "#{class} justify-between"
+      else
+        class
+      end
+
+    assigns = assign(assigns, :class, class)
+
     ~H"""
-    <.unstyled_link
-      new_tab={@new_tab}
-      href={@href}
-      class="w-full justify-between text-gray-700 dark:text-gray-300 block px-3.5 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-100"
-    >
+    <.unstyled_link new_tab={@new_tab} href={@href} x-on:click="close()" class={@class} {@rest}>
       <%= render_slot(@inner_block) %>
     </.unstyled_link>
     """
@@ -241,7 +242,7 @@ defmodule PlausibleWeb.Components.Generic do
       """
     else
       ~H"""
-      <.link class={@class} href={@href}>
+      <.link class={@class} href={@href} {@rest}>
         <%= render_slot(@inner_block) %>
       </.link>
       """

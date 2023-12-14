@@ -21,6 +21,7 @@ defmodule Plausible.Site do
     field :conversions_enabled, :boolean, default: true
     field :props_enabled, :boolean, default: true
     field :funnels_enabled, :boolean, default: true
+    field :accept_traffic_until, :naive_datetime
 
     field :ingest_rate_limit_scale_seconds, :integer, default: 60
     # default is set via changeset/2
@@ -56,6 +57,8 @@ defmodule Plausible.Site do
 
     timestamps()
   end
+
+  def new(params), do: changeset(%__MODULE__{}, params)
 
   @domain_unique_error """
   This domain cannot be registered. Perhaps one of your colleagues registered it? If that's not the case, please contact support@plausible.io
