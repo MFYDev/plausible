@@ -508,9 +508,7 @@ cloud_cron = [
   # Daily at 15
   {"0 15 * * *", Plausible.Workers.NotifyAnnualRenewal},
   # Every midnight
-  {"0 0 * * *", Plausible.Workers.LockSites},
-  # Daily at 5
-  {"0 5 * * *", Plausible.Workers.AcceptTrafficUntil}
+  {"0 0 * * *", Plausible.Workers.LockSites}
 ]
 
 crontab = if(is_selfhost, do: base_cron, else: base_cron ++ cloud_cron)
@@ -526,8 +524,7 @@ base_queues = [
   # NOTE: to be removed once #3700 is released
   google_analytics_imports: 1,
   analytics_imports: 1,
-  domain_change_transition: 1,
-  check_accept_traffic_until: 1
+  domain_change_transition: 1
 ]
 
 cloud_queues = [
