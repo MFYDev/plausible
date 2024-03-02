@@ -50,6 +50,20 @@ defmodule Plausible.Factory do
     }
   end
 
+  def site_import_factory do
+    today = Date.utc_today()
+
+    %Plausible.Imported.SiteImport{
+      site: build(:site),
+      imported_by: build(:user),
+      start_date: Date.add(today, -200),
+      end_date: today,
+      source: :universal_analytics,
+      status: :completed,
+      legacy: false
+    }
+  end
+
   def ch_session_factory do
     hostname = sequence(:domain, &"example-#{&1}.com")
 
@@ -69,24 +83,20 @@ defmodule Plausible.Factory do
   end
 
   def pageview_factory do
-    struct!(
-      event_factory(),
-      %{
-        name: "pageview"
-      }
-    )
+    Map.put(event_factory(), :name, "pageview")
   end
 
   def event_factory do
     hostname = sequence(:domain, &"example-#{&1}.com")
 
-    %Plausible.ClickhouseEventV2{
+    %{
       hostname: hostname,
       site_id: Enum.random(1000..10_000),
       pathname: "/",
       timestamp: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second),
       user_id: SipHash.hash!(hash_key(), Ecto.UUID.generate()),
-      session_id: SipHash.hash!(hash_key(), Ecto.UUID.generate())
+      session_id: SipHash.hash!(hash_key(), Ecto.UUID.generate()),
+      _factory_event: true
     }
   end
 
@@ -282,6 +292,12 @@ defmodule Plausible.Factory do
     %Plausible.Shield.IPRule{
       inet: Plausible.TestUtils.random_ip(),
       description: "Test IP Rule",
+      added_by: "Mr Seed <user@plausible.test>"
+    }
+  end
+
+  def country_rule_factory do
+    %Plausible.Shield.CountryRule{
       added_by: "Mr Seed <user@plausible.test>"
     }
   end
