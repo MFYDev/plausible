@@ -4,7 +4,9 @@ defmodule Plausible.Stats.Compare do
   end
 
   def calculate_change(:bounce_rate, old_count, new_count) do
-    if old_count > 0, do: new_count - old_count
+    if is_integer(old_count) && is_integer(new_count) && old_count > 0 do
+      new_count - old_count
+    end
   end
 
   def calculate_change(_metric, old_count, new_count) do
@@ -12,6 +14,7 @@ defmodule Plausible.Stats.Compare do
   end
 
   def percent_change(nil, _new_count), do: nil
+  def percent_change(_old_count, nil), do: nil
 
   def percent_change(%Money{} = old_count, %Money{} = new_count) do
     old_count = old_count |> Money.to_decimal() |> Decimal.to_float()
