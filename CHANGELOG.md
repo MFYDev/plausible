@@ -31,6 +31,8 @@ All notable changes to this project will be documented in this file.
 - Add 'browser_versions.csv' to CSV export
 - Add `CLICKHOUSE_MAX_BUFFER_SIZE_BYTES` env var which defaults to `100000` (100KB)
 - Add alternative SMTP adapter plausible/analytics#3654
+- Add `EXTRA_CONFIG_PATH` env var to specify extra Elixir config plausible/analytics#3906
+- Add restrictive `robots.txt` for self-hosted plausible/analytics#3905
 
 ### Removed
 - Removed the nested custom event property breakdown UI when filtering by a goal in Goal Conversions
