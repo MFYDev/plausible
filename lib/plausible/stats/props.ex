@@ -20,8 +20,6 @@ defmodule Plausible.Stats.Props do
     "visit:browser_version"
   ]
 
-  def event_props(), do: @event_props
-
   def valid_prop?(prop) when prop in @event_props, do: true
   def valid_prop?(prop) when prop in @session_props, do: true
   def valid_prop?("event:props:" <> prop) when byte_size(prop) > 0, do: true

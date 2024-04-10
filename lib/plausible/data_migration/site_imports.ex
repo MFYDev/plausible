@@ -2,112 +2,143 @@ defmodule Plausible.DataMigration.SiteImports do
   @moduledoc """
   Site imports migration backfilling SiteImport entries for old imports
   and alters import end dates to match actual end date of respective import stats.
+
+
   """
 
   import Ecto.Query
 
   alias Plausible.ClickhouseRepo
   alias Plausible.Imported
+  alias Plausible.Imported.SiteImport
   alias Plausible.Repo
   alias Plausible.Site
+
+  require Plausible.Imported.SiteImport
 
   def run(opts \\ []) do
     dry_run? = Keyword.get(opts, :dry_run?, true)
 
     site_import_query =
-      from(i in Imported.SiteImport, where: i.site_id == parent_as(:site).id, select: 1)
-
-    sites_with_imports =
-      from(s in Site, as: :site, where: not is_nil(s.imported_data) or exists(site_import_query))
-      |> Repo.all(log: false)
-
-    sites_count = length(sites_with_imports)
-
-    IO.puts("Processing #{sites_count} sites with imports (DRY RUN: #{dry_run?})...")
-
-    for {site, idx} <- Enum.with_index(sites_with_imports) do
-      site_imports =
-        from(i in Imported.SiteImport, where: i.site_id == ^site.id)
-        |> Repo.all(log: false)
-
-      IO.puts(
-        "Processing site ID #{site.id} (#{idx + 1} / #{sites_count}) (imported_data: #{is_struct(site.imported_data)}, site_imports: #{length(site_imports)})"
+      from(i in Imported.SiteImport,
+        where: i.site_id == parent_as(:site).id and i.status == ^SiteImport.completed(),
+        select: 1
       )
 
-      site_imports =
-        if site.imported_data && not Enum.any?(site_imports, & &1.legacy) do
-          IO.puts("Creating legacy site import entry for site ID #{site.id}")
+    sites_with_only_legacy_import =
+      from(s in Site,
+        as: :site,
+        where:
+          not is_nil(s.imported_data) and fragment("?->>'status'", s.imported_data) == "ok" and
+            not exists(site_import_query)
+      )
+      |> Repo.all(log: false)
 
-          # create legacy entry if there's not one yet
-          params =
-            site.imported_data
-            |> Imported.SiteImport.from_legacy()
-            |> Map.put(:site_id, site.id)
-            |> Map.take([:legacy, :start_date, :end_date, :source, :status, :site_id])
+    site_imports =
+      from(i in Imported.SiteImport, where: i.status == ^SiteImport.completed())
+      |> Repo.all(log: false)
 
-          legacy_site_import =
-            %Imported.SiteImport{}
-            |> Ecto.Changeset.change(params)
-            |> insert!(dry_run?)
+    legacy_site_imports = backfill_legacy_site_imports(sites_with_only_legacy_import, dry_run?)
 
-          [legacy_site_import | site_imports]
-        else
-          IO.puts("Legacy site import entry for site ID #{site.id} already exists")
+    all_site_imports = Repo.preload(site_imports ++ legacy_site_imports, :site)
 
-          site_imports
-        end
-
-      # adjust end date for each site import
-      for site_import <- site_imports do
-        IO.puts(
-          "Adjusting end date for site import #{site_import.id} (site ID #{site.id}, start date: #{site_import.start_date}, end date: #{site_import.end_date})"
-        )
-
-        import_ids =
-          if site_import.legacy do
-            [0, site_import.id]
-          else
-            [site_import.id]
-          end
-
-        end_date = imported_stats_end_date(site.id, import_ids)
-
-        if !end_date do
-          IO.puts(
-            "Site import #{site_import.id} (site ID #{site.id}) does not have any recorded stats. Removing it."
-          )
-
-          if site_import.legacy do
-            clear_imported_data(site, dry_run?)
-          end
-
-          delete!(site_import, dry_run?)
-        else
-          end_date =
-            if Date.compare(end_date, site_import.end_date) in [:lt, :eq] do
-              end_date
-            else
-              IO.puts(
-                "Site import #{site_import.id} (site ID #{site.id}) computed end date is later than the current one. Skipping."
-              )
-
-              site_import.end_date
-            end
-
-          site_import
-          |> Ecto.Changeset.change(end_date: end_date)
-          |> update!(dry_run?)
-
-          IO.puts(
-            "End date of site import #{site_import.id} (site ID #{site.id}) adjusted to #{end_date}"
-          )
-        end
-      end
-
-      IO.puts("Done processing site ID #{site.id}")
-    end
+    adjust_site_import_end_dates(all_site_imports, dry_run?)
 
     IO.puts("Finished")
+  end
+
+  defp backfill_legacy_site_imports(sites, dry_run?) do
+    total = length(sites)
+
+    IO.puts("Backfilling legacy site import across #{total} sites (DRY RUN: #{dry_run?})...")
+
+    legacy_site_imports =
+      for {site, idx} <- Enum.with_index(sites) do
+        IO.puts("Creating legacy site import entry for site ID #{site.id} (#{idx + 1}/#{total})")
+
+        params =
+          site.imported_data
+          |> Imported.SiteImport.from_legacy()
+          |> Map.put(:site_id, site.id)
+          |> Map.take([:legacy, :start_date, :end_date, :source, :status, :site_id])
+
+        %Imported.SiteImport{}
+        |> Ecto.Changeset.change(params)
+        |> insert!(dry_run?)
+      end
+
+    IO.puts("Finished backfilling sites.")
+
+    legacy_site_imports
+  end
+
+  defp adjust_site_import_end_dates(site_imports, dry_run?) do
+    total = length(site_imports)
+
+    IO.puts("Adjusting end dates of #{total} site imports (DRY RUN: #{dry_run?})...")
+
+    for {site_import, idx} <- Enum.with_index(site_imports) do
+      IO.puts(
+        "Adjusting end date for site import #{site_import.id} (#{idx + 1}/#{total}) (site ID #{site_import.site_id}, start date: #{site_import.start_date}, end date: #{site_import.end_date})"
+      )
+
+      import_ids =
+        if site_import.legacy do
+          [0, site_import.id]
+        else
+          [site_import.id]
+        end
+
+      end_date = imported_stats_end_date(site_import.site_id, import_ids)
+
+      if !end_date do
+        IO.puts(
+          "Site import #{site_import.id} (site ID #{site_import.site_id}) does not have any recorded stats. Removing it."
+        )
+
+        if site_import.legacy do
+          # sanity check that data is correct
+          "ok" = site_import.site.imported_data.status
+
+          clear_imported_data(site_import.site, dry_run?)
+        end
+
+        delete!(site_import, dry_run?)
+      else
+        case Date.compare(end_date, site_import.end_date) do
+          :lt ->
+            IO.puts(
+              "End date of site import #{site_import.id} (site ID #{site_import.site_id}) is adjusted from #{site_import.end_date} to #{end_date}."
+            )
+
+            site_import
+            |> Ecto.Changeset.change(end_date: end_date)
+            |> update!(dry_run?)
+
+            # credo:disable-for-next-line Credo.Check.Refactor.Nesting
+            if site_import.legacy do
+              # sanity check that data is correct
+              "ok" = site_import.site.imported_data.status
+
+              site_import.site
+              |> Ecto.Changeset.change(imported_data: %{end_date: end_date})
+              |> update!(dry_run?)
+            end
+
+          :eq ->
+            IO.puts(
+              "End date of site import #{site_import.id} (site ID #{site_import.site_id}) is left unadjusted."
+            )
+
+          :gt ->
+            IO.puts(
+              "Site import #{site_import.id} (site ID #{site_import.site_id}) computed end date is later than the current one. Skipping."
+            )
+        end
+      end
+    end
+
+    IO.puts("Finished adjusting end dates of site imports.")
   end
 
   # Exposed for testing purposes
