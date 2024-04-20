@@ -35,10 +35,13 @@ defmodule PlausibleWeb.Live.ImportsExportsSettings do
       |> assign_new(:current_user, fn ->
         Plausible.Repo.get(Plausible.Auth.User, user_id)
       end)
+      |> assign_new(:max_imports, fn %{site: site} ->
+        Imported.max_complete_imports(site)
+      end)
 
     :ok = Imported.listen()
 
-    {:ok, assign(socket, max_imports: Imported.max_complete_imports())}
+    {:ok, socket}
   end
 
   def render(assigns) do
@@ -79,7 +82,7 @@ defmodule PlausibleWeb.Live.ImportsExportsSettings do
         class="w-36 h-20"
         theme="bright"
         disabled={@import_in_progress? or @at_maximum?}
-        href={Plausible.Google.API.import_authorize_url(@site.id, "import", legacy: false)}
+        href={Plausible.Google.API.import_authorize_url(@site.id)}
       >
         <img src="/images/icon/google_analytics_logo.svg" alt="Google Analytics import" />
       </.button_link>
@@ -137,7 +140,7 @@ defmodule PlausibleWeb.Live.ImportsExportsSettings do
             <%= Plausible.Imported.SiteImport.label(entry.site_import) %>
             <span :if={entry.live_status == SiteImport.completed()} class="text-xs font-normal">
               (<%= PlausibleWeb.StatsView.large_number_format(
-                Map.get(@pageview_counts, entry.site_import.id, 0)
+                pageview_count(entry.site_import, @pageview_counts)
               ) %> page views)
             </span>
           </p>
@@ -181,6 +184,16 @@ defmodule PlausibleWeb.Live.ImportsExportsSettings do
       end
 
     {:noreply, assign(socket, site_imports: site_imports, pageview_counts: pageview_counts)}
+  end
+
+  defp pageview_count(site_import, pageview_counts) do
+    count = Map.get(pageview_counts, site_import.id, 0)
+
+    if site_import.legacy do
+      count + Map.get(pageview_counts, 0, 0)
+    else
+      count
+    end
   end
 
   defp update_imports(site_imports, import_id, status_str) do
