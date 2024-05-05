@@ -46,7 +46,7 @@ defmodule Plausible.Stats.Clickhouse do
       group_by: i.import_id,
       select: {i.import_id, sum(i.pageviews)}
     )
-    |> Plausible.ClickhouseRepo.all()
+    |> Plausible.ClickhouseRepo.all(label: :imported_pageview_counts)
     |> Map.new()
   end
 
@@ -113,11 +113,11 @@ defmodule Plausible.Stats.Clickhouse do
         offset: ^offset
       )
 
-    on_full_build do
+    on_ee do
       referrers = Plausible.Stats.Sampling.add_query_hint(referrers, 10_000_000)
     end
 
-    ClickhouseRepo.all(referrers)
+    ClickhouseRepo.all(referrers, label: :referrers)
   end
 
   def current_visitors(site, query) do
@@ -168,7 +168,7 @@ defmodule Plausible.Stats.Clickhouse do
 
     previous_result =
       previous_query
-      |> ClickhouseRepo.all()
+      |> ClickhouseRepo.all(label: :last_24h_visitors_previous)
       |> Enum.reduce(%{}, fn
         %{total_visitors: total, site_id: site_id}, acc -> Map.put_new(acc, site_id, total)
       end)
@@ -193,13 +193,13 @@ defmodule Plausible.Stats.Clickhouse do
         order_by: [e.site_id, fragment("toStartOfHour(timestamp)")]
       )
 
-    on_full_build do
+    on_ee do
       current_q = Plausible.Stats.Sampling.add_query_hint(current_q)
     end
 
     result =
       current_q
-      |> ClickhouseRepo.all()
+      |> ClickhouseRepo.all(label: :last_24h_visitors_current)
       |> Enum.group_by(& &1.site_id)
       |> Enum.map(fn {site_id, entries} ->
         %{total: visitors} = List.first(entries)
@@ -231,7 +231,7 @@ defmodule Plausible.Stats.Clickhouse do
         },
         group_by: [e.site_id]
 
-    on_full_build do
+    on_ee do
       query = Plausible.Stats.Sampling.add_query_hint(query)
     end
 
@@ -260,7 +260,7 @@ defmodule Plausible.Stats.Clickhouse do
         where: e.timestamp >= ^first_datetime and e.timestamp < ^last_datetime
       )
 
-    on_full_build do
+    on_ee do
       q = Plausible.Stats.Sampling.add_query_hint(q, 10_000_000)
     end
 

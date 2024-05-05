@@ -98,7 +98,6 @@ defmodule Plausible.Exports do
           path: Path.t(),
           name: String.t(),
           expires_at: DateTime.t() | nil,
-          download_link: String.t(),
           size: pos_integer
         }
 
@@ -113,14 +112,7 @@ defmodule Plausible.Exports do
       created_on_in_site_tz = Plausible.Timezones.to_date_in_timezone(created_at, timezone)
       name = archive_filename(domain, created_on_in_site_tz)
 
-      download_link =
-        PlausibleWeb.Router.Helpers.site_path(
-          PlausibleWeb.Endpoint,
-          :download_local_export,
-          domain
-        )
-
-      %{path: path, name: name, expires_at: nil, download_link: download_link, size: size}
+      %{path: path, name: name, expires_at: nil, size: size}
     end
   end
 
@@ -175,7 +167,6 @@ defmodule Plausible.Exports do
           path: path,
           name: name,
           expires_at: expires_at,
-          download_link: Plausible.S3.download_url(bucket, path),
           size: String.to_integer(size)
         }
     end
@@ -242,7 +233,6 @@ defmodule Plausible.Exports do
     %{
       filename.("imported_visitors") => export_visitors_q(site_id, timezone, date_range),
       filename.("imported_sources") => export_sources_q(site_id, timezone, date_range),
-      # NOTE: this query can result in `MEMORY_LIMIT_EXCEEDED` error
       filename.("imported_pages") => export_pages_q(site_id, timezone, date_range),
       filename.("imported_entry_pages") => export_entry_pages_q(site_id, timezone, date_range),
       filename.("imported_exit_pages") => export_exit_pages_q(site_id, timezone, date_range),
@@ -254,7 +244,7 @@ defmodule Plausible.Exports do
     }
   end
 
-  on_full_build do
+  on_ee do
     defp sampled(table, date_range) do
       from(table)
       |> Plausible.Stats.Sampling.add_query_hint()
@@ -327,16 +317,47 @@ defmodule Plausible.Exports do
   end
 
   defp export_visitors_q(site_id, timezone, date_range) do
-    from s in sampled("sessions_v2", date_range),
-      where: s.site_id == ^site_id,
-      group_by: selected_as(:date),
+    visitors_sessions_q =
+      from s in sampled("sessions_v2", date_range),
+        where: s.site_id == ^site_id,
+        group_by: selected_as(:date),
+        select: %{
+          date: date(s.start, ^timezone),
+          bounces: bounces(s),
+          visits: visits(s),
+          visit_duration: visit_duration(s),
+          visitors: visitors(s)
+        }
+
+    visitors_events_q =
+      from e in sampled("events_v2", date_range),
+        where: e.site_id == ^site_id,
+        group_by: selected_as(:date),
+        select: %{
+          date: date(e.timestamp, ^timezone),
+          pageviews:
+            selected_as(
+              fragment("toUInt64(round(countIf(?='pageview')*any(_sample_factor)))", e.name),
+              :pageviews
+            )
+        }
+
+    visitors_q =
+      "e"
+      |> with_cte("e", as: ^visitors_events_q)
+      |> with_cte("s", as: ^visitors_sessions_q)
+
+    from e in visitors_q,
+      full_join: s in "s",
+      on: e.date == s.date,
+      order_by: selected_as(:date),
       select: [
-        date(s.start, ^timezone),
-        visitors(s),
-        pageviews(s),
-        bounces(s),
-        visits(s),
-        visit_duration(s)
+        selected_as(fragment("greatest(?,?)", s.date, e.date), :date),
+        s.visitors,
+        e.pageviews,
+        s.bounces,
+        s.visits,
+        s.visit_duration
       ]
   end
 
@@ -372,39 +393,12 @@ defmodule Plausible.Exports do
   end
 
   defp export_pages_q(site_id, timezone, date_range) do
-    window_q =
-      from e in sampled("events_v2", nil),
-        where: e.site_id == ^site_id,
-        where: [name: "pageview"],
-        select: %{
-          timestamp: selected_as(fragment("toTimeZone(?,?)", e.timestamp, ^timezone), :timestamp),
-          next_timestamp:
-            over(fragment("leadInFrame(toTimeZone(?,?))", e.timestamp, ^timezone),
-              partition_by: e.session_id,
-              order_by: e.timestamp,
-              frame: fragment("ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING")
-            ),
-          pathname: e.pathname,
-          hostname: e.hostname,
-          user_id: e.user_id,
-          session_id: e.session_id,
-          _sample_factor: fragment("_sample_factor")
-        }
-
-    window_q =
-      if date_range do
-        from e in window_q,
-          where: selected_as(:timestamp) >= ^date_range.first,
-          where: fragment("toDate(?)", selected_as(:timestamp)) <= ^date_range.last
-      else
-        window_q
-      end
-
-    from e in subquery(window_q),
+    from e in sampled("events_v2", date_range),
+      where: [site_id: ^site_id, name: "pageview"],
       group_by: [selected_as(:date), e.pathname],
       order_by: selected_as(:date),
       select: [
-        selected_as(fragment("toDate(?)", e.timestamp), :date),
+        date(e.timestamp, ^timezone),
         selected_as(fragment("any(?)", e.hostname), :hostname),
         selected_as(e.pathname, :page),
         selected_as(
@@ -412,15 +406,7 @@ defmodule Plausible.Exports do
           :visits
         ),
         visitors(e),
-        selected_as(fragment("toUInt64(round(count()*any(_sample_factor)))"), :pageviews),
-        selected_as(
-          fragment("toUInt64(round(countIf(?=0)*any(_sample_factor)))", e.next_timestamp),
-          :exits
-        ),
-        selected_as(
-          fragment("sum(greatest(?,0))", e.next_timestamp - e.timestamp),
-          :time_on_page
-        )
+        selected_as(fragment("toUInt64(round(count()*any(_sample_factor)))"), :pageviews)
       ]
   end
 

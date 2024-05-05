@@ -305,7 +305,7 @@ defmodule PlausibleWeb.SiteControllerTest do
       assert_no_emails_delivered()
     end
 
-    @tag :full_build_only
+    @tag :ee_only
     test "does not allow site creation when the user is at their site limit", %{
       conn: conn,
       user: user
@@ -721,6 +721,28 @@ defmodule PlausibleWeb.SiteControllerTest do
 
       conn = get(conn, "/#{site.domain}/settings/imports-exports")
       refute html_response(conn, 200) =~ "No new imports can be started"
+    end
+
+    test "displays notice when import in progress is running for over 5 minutes", %{
+      conn: conn,
+      site: site
+    } do
+      six_minutes_ago = NaiveDateTime.add(NaiveDateTime.utc_now(), -360)
+
+      _site_import1 = insert(:site_import, site: site, status: SiteImport.completed())
+
+      _site_import2 =
+        insert(:site_import,
+          site: site,
+          status: SiteImport.importing(),
+          updated_at: six_minutes_ago
+        )
+
+      conn = get(conn, "/#{site.domain}/settings/imports-exports")
+      response = html_response(conn, 200)
+      assert response =~ "No new imports can be started"
+      assert response =~ "The import process might be taking longer due to the amount of data"
+      assert response =~ "and rate limiting enforced by Google Analytics"
     end
   end
 

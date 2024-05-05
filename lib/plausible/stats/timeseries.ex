@@ -25,7 +25,7 @@ defmodule Plausible.Stats.Timeseries do
       Plausible.Stats.TableDecider.partition_metrics(metrics, query)
 
     {currency, event_metrics} =
-      on_full_build do
+      on_ee do
         Plausible.Stats.Goal.Revenue.get_revenue_tracking_currency(site, query, event_metrics)
       else
         {nil, event_metrics}
@@ -58,7 +58,7 @@ defmodule Plausible.Stats.Timeseries do
     |> select_bucket(site, query)
     |> maybe_add_timeseries_conversion_rate(site, query, metrics)
     |> Plausible.Stats.Imported.merge_imported_timeseries(site, query, metrics)
-    |> ClickhouseRepo.all()
+    |> ClickhouseRepo.all(label: :event_timeseries)
   end
 
   defp sessions_timeseries(_, _, []), do: []
@@ -68,7 +68,7 @@ defmodule Plausible.Stats.Timeseries do
     |> filter_converted_sessions(site, query)
     |> select_bucket(site, query)
     |> Plausible.Stats.Imported.merge_imported_timeseries(site, query, metrics)
-    |> ClickhouseRepo.all()
+    |> ClickhouseRepo.all(label: :session_timeseries)
     |> Util.keep_requested_metrics(metrics)
   end
 
@@ -245,7 +245,7 @@ defmodule Plausible.Stats.Timeseries do
     end)
   end
 
-  on_full_build do
+  on_ee do
     defp cast_revenue_metrics_to_money(results, revenue_goals) do
       Plausible.Stats.Goal.Revenue.cast_revenue_metrics_to_money(results, revenue_goals)
     end

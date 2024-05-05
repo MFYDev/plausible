@@ -1,12 +1,14 @@
 defmodule Plausible.Imported.CSVImporterTest do
   use Plausible
   use Plausible.DataCase
+  use Bamboo.Test
+
   alias Plausible.Imported.{CSVImporter, SiteImport}
   require SiteImport
 
   doctest CSVImporter, import: true
 
-  on_full_build do
+  on_ee do
     @moduletag :minio
   end
 
@@ -33,7 +35,7 @@ defmodule Plausible.Imported.CSVImporterTest do
         Enum.map(tables, fn table ->
           filename = "#{table}_#{start_date}_#{end_date}.csv"
 
-          on_full_build do
+          on_ee do
             %{
               "filename" => filename,
               "s3_url" =>
@@ -54,7 +56,7 @@ defmodule Plausible.Imported.CSVImporterTest do
                  start_date: date_range.first,
                  end_date: date_range.last,
                  uploads: uploads,
-                 storage: on_full_build(do: "s3", else: "local")
+                 storage: on_ee(do: "s3", else: "local")
                )
 
       assert %Oban.Job{args: %{"import_id" => import_id, "uploads" => ^uploads} = args} =
@@ -72,7 +74,7 @@ defmodule Plausible.Imported.CSVImporterTest do
 
       assert CSVImporter.parse_args(args) == [
                uploads: uploads,
-               storage: on_full_build(do: "s3", else: "local")
+               storage: on_ee(do: "s3", else: "local")
              ]
     end
   end
@@ -247,23 +249,23 @@ defmodule Plausible.Imported.CSVImporterTest do
         %{
           name: "imported_pages_20211230_20220101.csv",
           body: """
-          "date","visitors","pageviews","exits","time_on_page","hostname","page"
-          "2021-12-30",1,1,0,43,"lucky.numbers.com","/14776416252794997127"
-          "2021-12-30",1,1,1,0,"lucky.numbers.com","/14776416252794997127"
-          "2021-12-30",6,6,6,0,"lucky.numbers.com","/14776416252794997127"
-          "2021-12-30",1,1,1,0,"lucky.numbers.com","/9102354072466236765"
-          "2021-12-30",1,1,1,0,"lucky.numbers.com","/7478911940502018071"
-          "2021-12-30",1,1,1,0,"lucky.numbers.com","/6402607186523575652"
-          "2021-12-30",2,2,2,0,"lucky.numbers.com","/9962503789684934900"
-          "2021-12-30",8,10,10,0,"lucky.numbers.com","/13595620304963848161"
-          "2021-12-30",2,2,2,0,"lucky.numbers.com","/17019199732013993436"
-          "2021-12-30",32,33,32,211,"lucky.numbers.com","/9874837495456455794"
-          "2021-12-31",4,4,4,0,"lucky.numbers.com","/14776416252794997127"
-          "2021-12-31",1,1,1,0,"lucky.numbers.com","/8738789417178304429"
-          "2021-12-31",1,1,1,0,"lucky.numbers.com","/7445073500314667742"
-          "2021-12-31",1,1,1,0,"lucky.numbers.com","/4897404798407749335"
-          "2021-12-31",1,2,1,29,"lucky.numbers.com","/11263893625781431659"
-          "2022-01-01",2,2,2,0,"lucky.numbers.com","/5878724061840196349"
+          "date","visitors","pageviews","hostname","page"
+          "2021-12-30",1,1,"lucky.numbers.com","/14776416252794997127"
+          "2021-12-30",1,1,"lucky.numbers.com","/14776416252794997127"
+          "2021-12-30",6,6,"lucky.numbers.com","/14776416252794997127"
+          "2021-12-30",1,1,"lucky.numbers.com","/9102354072466236765"
+          "2021-12-30",1,1,"lucky.numbers.com","/7478911940502018071"
+          "2021-12-30",1,1,"lucky.numbers.com","/6402607186523575652"
+          "2021-12-30",2,2,"lucky.numbers.com","/9962503789684934900"
+          "2021-12-30",8,10,"lucky.numbers.com","/13595620304963848161"
+          "2021-12-30",2,2,"lucky.numbers.com","/17019199732013993436"
+          "2021-12-30",32,33,"lucky.numbers.com","/9874837495456455794"
+          "2021-12-31",4,4,"lucky.numbers.com","/14776416252794997127"
+          "2021-12-31",1,1,"lucky.numbers.com","/8738789417178304429"
+          "2021-12-31",1,1,"lucky.numbers.com","/7445073500314667742"
+          "2021-12-31",1,1,"lucky.numbers.com","/4897404798407749335"
+          "2021-12-31",1,2,"lucky.numbers.com","/11263893625781431659"
+          "2022-01-01",2,2,"lucky.numbers.com","/5878724061840196349"
           """
         },
         %{
@@ -312,7 +314,7 @@ defmodule Plausible.Imported.CSVImporterTest do
 
       uploads =
         for %{name: name, body: body} <- csvs do
-          on_full_build do
+          on_ee do
             %{s3_url: s3_url} = Plausible.S3.import_presign_upload(site.id, name)
             [bucket, key] = String.split(URI.parse(s3_url).path, "/", parts: 2)
             ExAws.request!(ExAws.S3.put_object(bucket, key, body))
@@ -331,7 +333,7 @@ defmodule Plausible.Imported.CSVImporterTest do
           start_date: date_range.first,
           end_date: date_range.last,
           uploads: uploads,
-          storage: on_full_build(do: "s3", else: "local")
+          storage: on_ee(do: "s3", else: "local")
         )
 
       assert %{success: 1} = Oban.drain_queue(queue: :analytics_imports, with_safety?: false)
@@ -374,7 +376,7 @@ defmodule Plausible.Imported.CSVImporterTest do
 
       uploads =
         for %{name: name, body: body} <- csvs do
-          on_full_build do
+          on_ee do
             %{s3_url: s3_url} = Plausible.S3.import_presign_upload(site.id, name)
             [bucket, key] = String.split(URI.parse(s3_url).path, "/", parts: 2)
             ExAws.request!(ExAws.S3.put_object(bucket, key, body))
@@ -393,7 +395,7 @@ defmodule Plausible.Imported.CSVImporterTest do
           start_date: date_range.first,
           end_date: date_range.last,
           uploads: uploads,
-          storage: on_full_build(do: "s3", else: "local")
+          storage: on_ee(do: "s3", else: "local")
         )
 
       assert %{discard: 1} = Oban.drain_queue(queue: :analytics_imports, with_safety?: false)
@@ -479,7 +481,7 @@ defmodule Plausible.Imported.CSVImporterTest do
       ])
 
       # export archive to s3
-      on_full_build do
+      on_ee do
         assert {:ok, _job} = Plausible.Exports.schedule_s3_export(site.id, user.email)
       else
         assert {:ok, %{args: %{"local_path" => local_path}}} =
@@ -488,8 +490,18 @@ defmodule Plausible.Imported.CSVImporterTest do
 
       assert %{success: 1} = Oban.drain_queue(queue: :analytics_exports, with_safety: false)
 
+      assert %{success: 1} =
+               Oban.drain_queue(queue: :notify_exported_analytics, with_safety: false)
+
+      # check mailbox
+      assert_receive {:delivered_email, email}, _within = :timer.seconds(5)
+      assert email.to == [{user.name, user.email}]
+
+      assert email.html_body =~
+               ~s[Please click <a href="http://localhost:8000/#{URI.encode_www_form(site.domain)}/download/export">here</a> to start the download process.]
+
       # download archive
-      on_full_build do
+      on_ee do
         ExAws.request!(
           ExAws.S3.download_file(
             Plausible.S3.exports_bucket(),
@@ -508,7 +520,7 @@ defmodule Plausible.Imported.CSVImporterTest do
       # upload csvs
       uploads =
         Enum.map(files, fn file ->
-          on_full_build do
+          on_ee do
             %{s3_url: s3_url} = Plausible.S3.import_presign_upload(site.id, file)
             [bucket, key] = String.split(URI.parse(s3_url).path, "/", parts: 2)
             ExAws.request!(ExAws.S3.put_object(bucket, key, File.read!(file)))
@@ -526,7 +538,7 @@ defmodule Plausible.Imported.CSVImporterTest do
           start_date: date_range.first,
           end_date: date_range.last,
           uploads: uploads,
-          storage: on_full_build(do: "s3", else: "local")
+          storage: on_ee(do: "s3", else: "local")
         )
 
       assert %{success: 1} = Oban.drain_queue(queue: :analytics_imports, with_safety: false)
@@ -544,7 +556,7 @@ defmodule Plausible.Imported.CSVImporterTest do
   end
 
   defp clean_buckets(_context) do
-    on_full_build do
+    on_ee do
       clean_bucket = fn bucket ->
         ExAws.S3.list_objects_v2(bucket)
         |> ExAws.stream!()
