@@ -386,7 +386,7 @@ config :plausible, Plausible.ClickhouseRepo,
   transport_opts: ch_transport_opts,
   settings: [
     readonly: 1,
-    join_algorithm: "direct,parallel_hash"
+    join_algorithm: "direct,parallel_hash,hash"
   ]
 
 config :plausible, Plausible.IngestRepo,
@@ -524,7 +524,9 @@ cloud_cron = [
   # Every midnight
   {"0 0 * * *", Plausible.Workers.LockSites},
   # Daily at 8
-  {"0 8 * * *", Plausible.Workers.AcceptTrafficUntil}
+  {"0 8 * * *", Plausible.Workers.AcceptTrafficUntil},
+  # First sunday of the month, 4:00 UTC
+  {"0 4 1-7 * SUN", Plausible.Workers.ClickhouseCleanSites}
 ]
 
 crontab = if(is_selfhost, do: base_cron, else: base_cron ++ cloud_cron)
