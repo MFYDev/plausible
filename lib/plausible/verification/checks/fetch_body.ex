@@ -17,28 +17,28 @@ defmodule Plausible.Verification.Checks.FetchBody do
       Keyword.merge(
         [
           base_url: url,
-          max_redirects: 2,
-          connect_options: [timeout: 4_000],
-          receive_timeout: 4_000,
+          max_redirects: 4,
           max_retries: 3,
           retry_log_level: :warning
         ],
         fetch_body_opts
       )
 
-    req = Req.new(opts)
+    {req, resp} = opts |> Req.new() |> Req.Request.run_request()
 
-    case Req.get(req) do
-      {:ok, %Req.Response{status: status, body: body} = response}
+    case resp do
+      %Req.Response{status: status, body: body}
       when is_binary(body) and status in 200..299 ->
-        extract_document(state, response)
+        state
+        |> assign(final_domain: req.url.host)
+        |> extract_document(resp)
 
       _ ->
         state
     end
   end
 
-  defp extract_document(state, response) when byte_size(response.body) <= 500_000 do
+  defp extract_document(state, response) do
     with true <- html?(response),
          {:ok, document} <- Floki.parse_document(response.body) do
       state
@@ -48,10 +48,6 @@ defmodule Plausible.Verification.Checks.FetchBody do
       _ ->
         state
     end
-  end
-
-  defp extract_document(state, response) when byte_size(response.body) > 500_000 do
-    state
   end
 
   defp html?(%Req.Response{headers: headers}) do

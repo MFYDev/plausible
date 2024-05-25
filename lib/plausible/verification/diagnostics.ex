@@ -1,8 +1,10 @@
 defmodule Plausible.Verification.Diagnostics do
   @moduledoc """
-  Module responsible for translating diagnostics to user-friendly messages and recommendations.
+  Module responsible for translating diagnostics to user-friendly errors and recommendations.
   """
   require Logger
+
+  @errors Plausible.Verification.Errors.all()
 
   defstruct plausible_installed?: false,
             snippets_found_in_head: 0,
@@ -14,7 +16,7 @@ defmodule Plausible.Verification.Diagnostics do
             body_fetched?: false,
             wordpress_likely?: false,
             gtm_likely?: false,
-            callback_status: -1,
+            callback_status: 0,
             proxy_likely?: false,
             data_domain_mismatch?: false,
             wordpress_plugin?: false
@@ -35,25 +37,19 @@ defmodule Plausible.Verification.Diagnostics do
           plausible_installed?: true,
           snippets_found_in_head: 1,
           snippets_found_in_body: 0,
-          callback_status: 202,
+          callback_status: callback_status,
           snippet_found_after_busting_cache?: false,
           service_error: nil,
           data_domain_mismatch?: false
         },
         _url
-      ) do
+      )
+      when callback_status in [200, 202] do
     %Result{ok?: true}
   end
 
   def interpret(%__MODULE__{plausible_installed?: false, gtm_likely?: true}, _url) do
-    %Result{
-      ok?: false,
-      errors: ["We encountered an issue with your Plausible integration"],
-      recommendations: [
-        {"As you're using Google Tag Manager, you'll need to use a GTM-specific Plausible snippet",
-         "https://plausible.io/docs/google-tag-manager"}
-      ]
-    }
+    error(@errors.gtm)
   end
 
   def interpret(
@@ -65,14 +61,7 @@ defmodule Plausible.Verification.Diagnostics do
         },
         _url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["We encountered an issue with your site's CSP"],
-      recommendations: [
-        {"Please add plausible.io domain specifically to the allowed list of domains in your Content Security Policy (CSP)",
-         "https://plausible.io/docs/troubleshoot-integration"}
-      ]
-    }
+    error(@errors.csp)
   end
 
   def interpret(
@@ -86,13 +75,7 @@ defmodule Plausible.Verification.Diagnostics do
         },
         _url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["We couldn't find the Plausible snippet on your site"],
-      recommendations: [
-        {"Please insert the snippet into your site", "https://plausible.io/docs/plausible-script"}
-      ]
-    }
+    error(@errors.no_snippet)
   end
 
   def interpret(
@@ -102,14 +85,7 @@ defmodule Plausible.Verification.Diagnostics do
         },
         url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["We couldn't reach #{url}. Is your site up?"],
-      recommendations: [
-        {"If your site is running at a different location, please manually check your integration",
-         "https://plausible.io/docs/troubleshoot-integration"}
-      ]
-    }
+    error(@errors.unreachable, url: url)
   end
 
   def interpret(
@@ -120,14 +96,7 @@ defmodule Plausible.Verification.Diagnostics do
         _url
       )
       when not is_nil(service_error) do
-    %Result{
-      ok?: false,
-      errors: ["We encountered a temporary problem verifying your website"],
-      recommendations: [
-        {"Please try again in a few minutes or manually check your integration",
-         "https://plausible.io/docs/troubleshoot-integration"}
-      ]
-    }
+    error(@errors.temporary)
   end
 
   def interpret(
@@ -138,33 +107,59 @@ defmodule Plausible.Verification.Diagnostics do
         },
         url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["We couldn't reach #{url}. Is your site up?"],
-      recommendations: [
-        {"If your site is running at a different location, please manually check your integration",
-         "https://plausible.io/docs/troubleshoot-integration"}
-      ]
-    }
+    error(@errors.unreachable, url: url)
+  end
+
+  def interpret(
+        %__MODULE__{
+          snippets_found_in_body: 0,
+          snippets_found_in_head: 1,
+          plausible_installed?: true,
+          wordpress_likely?: false,
+          callback_status: -1
+        },
+        _url
+      ) do
+    error(@errors.old_script)
+  end
+
+  def interpret(
+        %__MODULE__{
+          snippets_found_in_body: 0,
+          snippets_found_in_head: 1,
+          plausible_installed?: true,
+          wordpress_likely?: true,
+          wordpress_plugin?: false,
+          callback_status: -1
+        },
+        _url
+      ) do
+    error(@errors.old_script_wp_no_plugin)
+  end
+
+  def interpret(
+        %__MODULE__{
+          snippets_found_in_body: 0,
+          snippets_found_in_head: 1,
+          plausible_installed?: true,
+          wordpress_likely?: true,
+          wordpress_plugin?: true,
+          callback_status: -1
+        },
+        _url
+      ) do
+    error(@errors.old_script_wp_plugin)
   end
 
   def interpret(
         %__MODULE__{
           plausible_installed?: true,
-          callback_status: callback_status,
+          callback_status: 0,
           proxy_likely?: true
         },
         _url
-      )
-      when callback_status != 202 do
-    %Result{
-      ok?: false,
-      errors: ["We encountered an error with your Plausible proxy"],
-      recommendations: [
-        {"Please check whether you've configured the /event route correctly",
-         "https://plausible.io/docs/proxy/introduction"}
-      ]
-    }
+      ) do
+    error(@errors.proxy_misconfigured)
   end
 
   def interpret(
@@ -177,14 +172,7 @@ defmodule Plausible.Verification.Diagnostics do
         },
         _url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["We encountered an error with your Plausible proxy"],
-      recommendations: [
-        {"Please re-enable the proxy in our WordPress plugin to start counting your visitors",
-         "https://plausible.io/wordpress-analytics-plugin"}
-      ]
-    }
+    error(@errors.proxy_wp_no_plugin)
   end
 
   def interpret(
@@ -196,14 +184,7 @@ defmodule Plausible.Verification.Diagnostics do
         },
         _url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["We encountered an error with your Plausible proxy"],
-      recommendations: [
-        {"Please check your proxy configuration to make sure it's set up correctly",
-         "https://plausible.io/docs/proxy/introduction"}
-      ]
-    }
+    error(@errors.proxy_general)
   end
 
   def interpret(
@@ -211,14 +192,7 @@ defmodule Plausible.Verification.Diagnostics do
         _url
       )
       when count_head + count_body > 1 do
-    %Result{
-      ok?: false,
-      errors: ["We've found multiple Plausible snippets on your site."],
-      recommendations: [
-        {"Please ensure that only one snippet is used",
-         "https://plausible.io/docs/troubleshoot-integration"}
-      ]
-    }
+    error(@errors.multiple_snippets)
   end
 
   def interpret(
@@ -231,14 +205,7 @@ defmodule Plausible.Verification.Diagnostics do
         },
         _url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["We encountered an issue with your site cache"],
-      recommendations: [
-        {"Please clear your WordPress cache to ensure that the latest version of your site is being displayed to all your visitors",
-         "https://plausible.io/wordpress-analytics-plugin"}
-      ]
-    }
+    error(@errors.cache_wp_plugin)
   end
 
   def interpret(
@@ -251,14 +218,7 @@ defmodule Plausible.Verification.Diagnostics do
         },
         _url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["We encountered an issue with your site cache"],
-      recommendations: [
-        {"Please install and activate our WordPress plugin to start counting your visitors",
-         "https://plausible.io/wordpress-analytics-plugin"}
-      ]
-    }
+    error(@errors.cache_wp_no_plugin)
   end
 
   def interpret(
@@ -270,37 +230,16 @@ defmodule Plausible.Verification.Diagnostics do
         },
         _url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["We encountered an issue with your site cache"],
-      recommendations: [
-        {"Please clear your cache (or wait for your provider to clear it) to ensure that the latest version of your site is being displayed to all your visitors",
-         "https://plausible.io/docs/troubleshoot-integration"}
-      ]
-    }
+    error(@errors.cache_general)
   end
 
   def interpret(%__MODULE__{snippets_found_in_head: 0, snippets_found_in_body: n}, _url)
       when n >= 1 do
-    %Result{
-      ok?: false,
-      errors: ["Plausible snippet is placed in the body of your site"],
-      recommendations: [
-        {"Please relocate the snippet to the header of your site",
-         "https://plausible.io/docs/troubleshoot-integration"}
-      ]
-    }
+    error(@errors.snippet_in_body)
   end
 
-  def interpret(%__MODULE__{data_domain_mismatch?: true}, url) do
-    %Result{
-      ok?: false,
-      errors: ["Your data-domain is different than #{url}"],
-      recommendations: [
-        {"Please ensure that the site in the data-domain attribute is an exact match to the site as you added it to your Plausible account",
-         "https://plausible.io/docs/troubleshoot-integration"}
-      ]
-    }
+  def interpret(%__MODULE__{data_domain_mismatch?: true}, "https://" <> domain) do
+    error(@errors.different_data_domain, domain: domain)
   end
 
   def interpret(
@@ -312,14 +251,7 @@ defmodule Plausible.Verification.Diagnostics do
         },
         _url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["A performance optimization plugin seems to have altered our snippet"],
-      recommendations: [
-        {"Please whitelist our script in your performance optimization plugin to stop it from changing our snippet",
-         "https://plausible.io/wordpress-analytics-plugin "}
-      ]
-    }
+    error(@errors.illegal_attrs_wp_plugin)
   end
 
   def interpret(
@@ -331,14 +263,7 @@ defmodule Plausible.Verification.Diagnostics do
         },
         _url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["A performance optimization plugin seems to have altered our snippet"],
-      recommendations: [
-        {"Please install and activate our WordPress plugin to avoid the most common plugin conflicts",
-         "https://plausible.io/wordpress-analytics-plugin "}
-      ]
-    }
+    error(@errors.illegal_attrs_wp_no_plugin)
   end
 
   def interpret(
@@ -349,14 +274,22 @@ defmodule Plausible.Verification.Diagnostics do
         },
         _url
       ) do
-    %Result{
-      ok?: false,
-      errors: ["Something seems to have altered our snippet"],
-      recommendations: [
-        {"Please manually check your integration to make sure that nothing prevents our script from working",
-         "https://plausible.io/docs/troubleshoot-integration"}
-      ]
-    }
+    error(@errors.illegal_attrs_general)
+  end
+
+  def interpret(
+        %__MODULE__{
+          plausible_installed?: true,
+          snippets_found_in_head: 0,
+          snippets_found_in_body: 0,
+          callback_status: callback_status,
+          snippet_found_after_busting_cache?: false,
+          service_error: nil
+        },
+        _url
+      )
+      when callback_status in [200, 202] do
+    %Result{ok?: true}
   end
 
   def interpret(rating, url) do
@@ -366,13 +299,19 @@ defmodule Plausible.Verification.Diagnostics do
       }
     )
 
+    error(@errors.unknown)
+  end
+
+  defp error(error) do
     %Result{
       ok?: false,
-      errors: ["Your Plausible integration is not working"],
-      recommendations: [
-        {"Please manually check your integration to make sure that the Plausible snippet has been inserted correctly",
-         "https://plausible.io/docs/troubleshoot-integration"}
-      ]
+      errors: [error.message],
+      recommendations: [{error.recommendation, error.url}]
     }
+  end
+
+  defp error(error, assigns) do
+    message = EEx.eval_string(error.message, assigns: assigns)
+    error(%{error | message: message})
   end
 end
