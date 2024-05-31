@@ -9,49 +9,23 @@ defmodule Plausible.Verification.ChecksTest do
 
   @errors Plausible.Verification.Errors.all()
 
-  @normal_body """
-  <html>
-  <head>
-  <script defer data-domain="example.com" src="http://localhost:8000/js/script.js"></script>
-  </head>
-  <body>Hello</body>
-  </html>
-  """
+  describe "successful verification" do
+    @normal_body """
+    <html>
+    <head>
+    <script defer data-domain="example.com" src="http://localhost:8000/js/script.js"></script>
+    </head>
+    <body>Hello</body>
+    </html>
+    """
 
-  describe "running checks" do
-    test "success" do
+    test "definite success" do
       stub_fetch_body(200, @normal_body)
       stub_installation()
 
       run_checks()
       |> Checks.interpret_diagnostics()
       |> assert_ok()
-    end
-
-    test "service error - 400" do
-      stub_fetch_body(200, @normal_body)
-      stub_installation(400, %{})
-
-      run_checks()
-      |> Checks.interpret_diagnostics()
-      |> assert_error(@errors.temporary)
-    end
-
-    @tag :slow
-    test "can't fetch body but headless reports ok" do
-      stub_fetch_body(500, "")
-      stub_installation()
-
-      {_, log} =
-        with_log(fn ->
-          run_checks()
-          |> Checks.interpret_diagnostics()
-          |> assert_error(@errors.unreachable, url: "https://example.com")
-        end)
-
-      assert log =~ "3 attempts left"
-      assert log =~ "2 attempts left"
-      assert log =~ "1 attempt left"
     end
 
     test "fetching will follow 2 redirects" do
@@ -82,6 +56,123 @@ defmodule Plausible.Verification.ChecksTest do
       assert_receive :redirect_sent
       assert_receive :redirect_sent
       refute_receive _
+    end
+
+    test "allowed via content-security-policy" do
+      stub_fetch_body(fn conn ->
+        conn
+        |> put_resp_header(
+          "content-security-policy",
+          Enum.random([
+            "default-src 'self'; script-src plausible.io; connect-src #{PlausibleWeb.Endpoint.host()}",
+            "default-src 'self' *.#{PlausibleWeb.Endpoint.host()}"
+          ])
+        )
+        |> put_resp_content_type("text/html")
+        |> send_resp(200, @normal_body)
+      end)
+
+      stub_installation()
+
+      run_checks()
+      |> Checks.interpret_diagnostics()
+      |> assert_ok()
+    end
+
+    @proxied_script_body """
+    <html>
+    <head>
+    <script defer data-domain="example.com" src="https://proxy.example.com/js/script.js"></script>
+    </head>
+    <body>Hello</body>
+    </html>
+    """
+
+    test "proxied setup working OK" do
+      stub_fetch_body(200, @proxied_script_body)
+      stub_installation()
+
+      run_checks()
+      |> Checks.interpret_diagnostics()
+      |> assert_ok()
+    end
+
+    @body_no_snippet """
+    <html> <head> </head> <body> Hello </body> </html>
+    """
+
+    test "non-standard integration where the snippet cannot be found but it works ok in headless" do
+      stub_fetch_body(200, @body_no_snippet)
+      stub_installation(200, plausible_installed(true, 202))
+
+      run_checks()
+      |> Checks.interpret_diagnostics()
+      |> assert_ok()
+    end
+
+    @different_data_domain_body """
+    <html>
+    <head>
+    <script defer data-domain="www.example.com" src="http://localhost:8000/js/script.js"></script>
+    </head>
+    <body>Hello</body>
+    </html>
+    """
+
+    test "data-domain mismatch on redirect chain" do
+      ref = :counters.new(1, [:atomics])
+      test = self()
+
+      Req.Test.stub(Plausible.Verification.Checks.FetchBody, fn conn ->
+        if :counters.get(ref, 1) == 0 do
+          :counters.add(ref, 1, 1)
+          send(test, :redirect_sent)
+
+          conn
+          |> put_resp_header("location", "https://www.example.com")
+          |> send_resp(302, "redirecting to https://www.example.com")
+        else
+          conn
+          |> put_resp_header("content-type", "text/html")
+          |> send_resp(200, @different_data_domain_body)
+        end
+      end)
+
+      stub_installation()
+
+      run_checks()
+      |> Checks.interpret_diagnostics()
+      |> assert_ok()
+
+      assert_receive :redirect_sent
+    end
+  end
+
+  describe "errors" do
+    test "service error - 400" do
+      stub_fetch_body(200, @normal_body)
+      stub_installation(400, %{})
+
+      run_checks()
+      |> Checks.interpret_diagnostics()
+      |> assert_error(@errors.temporary)
+    end
+
+    @tag :slow
+    test "can't fetch body but headless reports ok" do
+      stub_fetch_body(500, "")
+      stub_installation()
+
+      {_, log} =
+        with_log(fn ->
+          run_checks()
+          |> Checks.interpret_diagnostics()
+          |> assert_error(@errors.unreachable, url: "https://example.com")
+        end)
+
+      assert log =~ "3 attempts left"
+      assert log =~ "2 attempts left"
+      assert log =~ "1 attempt left"
     end
 
     test "fetching will give up at 5th redirect" do
@@ -162,16 +253,6 @@ defmodule Plausible.Verification.ChecksTest do
       |> Checks.interpret_diagnostics()
       |> assert_error(@errors.multiple_snippets)
     end
-
-    @body_no_snippet """
-    <html>
-    <head>
-    </head>
-    <body>
-    Hello
-    </body>
-    </html>
-    """
 
     test "detecting snippet after busting cache" do
       stub_fetch_body(fn conn ->
@@ -299,12 +380,32 @@ defmodule Plausible.Verification.ChecksTest do
       |> assert_error(@errors.no_snippet)
     end
 
+    @body_no_snippet_wp """
+    <html>
+    <head>
+    <meta name="foo" content="/wp-content/plugins/bar"/>
+    </head>
+    <body>
+    Hello
+    </body>
+    </html>
+    """
+
+    test "detecting no snippet on a wordpress site" do
+      stub_fetch_body(200, @body_no_snippet_wp)
+      stub_installation(200, plausible_installed(false))
+
+      run_checks()
+      |> Checks.interpret_diagnostics()
+      |> assert_error(@errors.no_snippet_wp)
+    end
+
     test "a check that raises" do
       defmodule FaultyCheckRaise do
         use Plausible.Verification.Check
 
         @impl true
-        def friendly_name, do: "Faulty check"
+        def report_progress_as, do: "Faulty check"
 
         @impl true
         def perform(_), do: raise("boom")
@@ -328,7 +429,7 @@ defmodule Plausible.Verification.ChecksTest do
         use Plausible.Verification.Check
 
         @impl true
-        def friendly_name, do: "Faulty check"
+        def report_progress_as, do: "Faulty check"
 
         @impl true
         def perform(_), do: :erlang.throw(:boom)
@@ -375,27 +476,6 @@ defmodule Plausible.Verification.ChecksTest do
       run_checks()
       |> Checks.interpret_diagnostics()
       |> assert_error(@errors.no_snippet)
-    end
-
-    test "allowed via content-security-policy" do
-      stub_fetch_body(fn conn ->
-        conn
-        |> put_resp_header(
-          "content-security-policy",
-          Enum.random([
-            "default-src 'self'; script-src plausible.io; connect-src #{PlausibleWeb.Endpoint.host()}",
-            "default-src 'self' *.#{PlausibleWeb.Endpoint.host()}"
-          ])
-        )
-        |> put_resp_content_type("text/html")
-        |> send_resp(200, @normal_body)
-      end)
-
-      stub_installation()
-
-      run_checks()
-      |> Checks.interpret_diagnostics()
-      |> assert_ok()
     end
 
     test "running checks sends progress messages" do
@@ -452,24 +532,6 @@ defmodule Plausible.Verification.ChecksTest do
       run_checks()
       |> Checks.interpret_diagnostics()
       |> assert_error(@errors.unreachable, url: "https://example.com")
-    end
-
-    @proxied_script_body """
-    <html>
-    <head>
-    <script defer data-domain="example.com" src="https://proxy.example.com/js/script.js"></script>
-    </head>
-    <body>Hello</body>
-    </html>
-    """
-
-    test "proxied setup working OK" do
-      stub_fetch_body(200, @proxied_script_body)
-      stub_installation()
-
-      run_checks()
-      |> Checks.interpret_diagnostics()
-      |> assert_ok()
     end
 
     test "proxied setup, function defined but callback won't fire" do
@@ -608,15 +670,6 @@ defmodule Plausible.Verification.ChecksTest do
       |> assert_error(@errors.old_script_wp_plugin)
     end
 
-    test "non-standard integration where the snippet cannot be found but it works ok in headless" do
-      stub_fetch_body(200, @body_no_snippet)
-      stub_installation(200, plausible_installed(true, 202))
-
-      run_checks()
-      |> Checks.interpret_diagnostics()
-      |> assert_ok()
-    end
-
     test "fails due to callback status being something unlikely like 500" do
       stub_fetch_body(200, @normal_body)
       stub_installation(200, plausible_installed(true, 500))
@@ -625,15 +678,6 @@ defmodule Plausible.Verification.ChecksTest do
       |> Checks.interpret_diagnostics()
       |> assert_error(@errors.unknown)
     end
-
-    @different_data_domain_body """
-    <html>
-    <head>
-    <script defer data-domain="www.example.com" src="http://localhost:8000/js/script.js"></script>
-    </head>
-    <body>Hello</body>
-    </html>
-    """
 
     test "data-domain mismatch" do
       stub_fetch_body(200, @different_data_domain_body)
@@ -644,32 +688,25 @@ defmodule Plausible.Verification.ChecksTest do
       |> assert_error(@errors.different_data_domain, domain: "example.com")
     end
 
-    test "data-domain mismatch on redirect chain" do
-      ref = :counters.new(1, [:atomics])
-      test = self()
+    @many_snippets_with_domain_mismatch """
+    <html>
+    <head>
+    <script defer data-domain="example.org" src="https://plausible.io/js/script.js"></script>
+    <script defer data-domain="example.org" src="https://plausible.io/js/script.js"></script>
+    </head>
+    <body>
+    Hello
+    </body>
+    </html>
+    """
 
-      Req.Test.stub(Plausible.Verification.Checks.FetchBody, fn conn ->
-        if :counters.get(ref, 1) == 0 do
-          :counters.add(ref, 1, 1)
-          send(test, :redirect_sent)
-
-          conn
-          |> put_resp_header("location", "https://www.example.com")
-          |> send_resp(302, "redirecting to https://www.example.com")
-        else
-          conn
-          |> put_resp_header("content-type", "text/html")
-          |> send_resp(200, @different_data_domain_body)
-        end
-      end)
-
+    test "prioritizes data-domain mismatch over multiple snippets" do
+      stub_fetch_body(200, @many_snippets_with_domain_mismatch)
       stub_installation()
 
       run_checks()
       |> Checks.interpret_diagnostics()
-      |> assert_ok()
-
-      assert_receive :redirect_sent
+      |> assert_error(@errors.different_data_domain, domain: "example.com")
     end
   end
 
@@ -717,13 +754,13 @@ defmodule Plausible.Verification.ChecksTest do
            ]
 
     assert interpretation.recommendations == [
-             {error.recommendation, error.url}
+             %{text: error.recommendation, url: error.url}
            ]
   end
 
   defp assert_error(interpretation, error, assigns) do
-    message = EEx.eval_string(error.message, assigns: assigns)
-    assert_error(interpretation, %{error | message: message})
+    recommendation = EEx.eval_string(error.recommendation, assigns: assigns)
+    assert_error(interpretation, %{error | recommendation: recommendation})
   end
 
   defp assert_ok(interpretation) do

@@ -81,11 +81,25 @@ defmodule Plausible.Verification.Diagnostics do
   def interpret(
         %__MODULE__{
           plausible_installed?: false,
+          snippets_found_in_head: 0,
+          snippets_found_in_body: 0,
+          body_fetched?: true,
+          service_error: nil,
+          wordpress_likely?: true
+        },
+        _url
+      ) do
+    error(@errors.no_snippet_wp)
+  end
+
+  def interpret(
+        %__MODULE__{
+          plausible_installed?: false,
           body_fetched?: false
         },
-        url
+        _url
       ) do
-    error(@errors.unreachable, url: url)
+    error(@errors.unreachable)
   end
 
   def interpret(
@@ -105,9 +119,9 @@ defmodule Plausible.Verification.Diagnostics do
           service_error: nil,
           body_fetched?: false
         },
-        url
+        _url
       ) do
-    error(@errors.unreachable, url: url)
+    error(@errors.unreachable)
   end
 
   def interpret(
@@ -187,6 +201,10 @@ defmodule Plausible.Verification.Diagnostics do
     error(@errors.proxy_general)
   end
 
+  def interpret(%__MODULE__{data_domain_mismatch?: true}, "https://" <> domain) do
+    error(@errors.different_data_domain, domain: domain)
+  end
+
   def interpret(
         %__MODULE__{snippets_found_in_head: count_head, snippets_found_in_body: count_body},
         _url
@@ -236,10 +254,6 @@ defmodule Plausible.Verification.Diagnostics do
   def interpret(%__MODULE__{snippets_found_in_head: 0, snippets_found_in_body: n}, _url)
       when n >= 1 do
     error(@errors.snippet_in_body)
-  end
-
-  def interpret(%__MODULE__{data_domain_mismatch?: true}, "https://" <> domain) do
-    error(@errors.different_data_domain, domain: domain)
   end
 
   def interpret(
@@ -306,12 +320,12 @@ defmodule Plausible.Verification.Diagnostics do
     %Result{
       ok?: false,
       errors: [error.message],
-      recommendations: [{error.recommendation, error.url}]
+      recommendations: [%{text: error.recommendation, url: error.url}]
     }
   end
 
   defp error(error, assigns) do
-    message = EEx.eval_string(error.message, assigns: assigns)
-    error(%{error | message: message})
+    recommendation = EEx.eval_string(error.recommendation, assigns: assigns)
+    error(%{error | recommendation: recommendation})
   end
 end
