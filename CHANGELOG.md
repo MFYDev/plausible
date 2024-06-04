@@ -6,12 +6,15 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - Snippet integration verification
+- Limited filtering support for imported data in the dashboard and via Stats API
 
 ### Removed
 
 ### Changed
 
 ### Fixed
+
+- Fix CSV import by adding a newline to the INSERT statement plausible/analytics#4172
 
 ## v2.1.0 - 2024-05-23
 
