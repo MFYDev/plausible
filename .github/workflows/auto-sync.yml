@@ -27,7 +27,7 @@ jobs:
     # Step 2: run the sync action
     - name: Sync upstream changes
       id: sync
-      uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
+      uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
       with:
         target_sync_branch: master
         target_repo_token: ${{ secrets.SYNC_TOKEN }}
