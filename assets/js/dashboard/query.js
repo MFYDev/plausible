@@ -5,6 +5,7 @@ import { PlausibleSearchParams, updatedQuery } from './util/url'
 import { nowForSite } from './util/date'
 import * as storage from './util/storage'
 import { COMPARISON_DISABLED_PERIODS, getStoredComparisonMode, isComparisonEnabled, getStoredMatchDayOfWeek } from './comparison-input'
+import { getFiltersByKeyPrefix } from './util/filters'
 
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
@@ -42,17 +43,20 @@ export function parseQuery(querystring, site) {
     to: q.get('to') ? dayjs.utc(q.get('to')) : undefined,
     match_day_of_week: matchDayOfWeek == 'true',
     with_imported: q.get('with_imported') ? q.get('with_imported') === 'true' : true,
-    experimental_session_count: q.get('experimental_session_count'),
     filters: parseJsonUrl(q.get('filters'), []),
     labels: parseJsonUrl(q.get('labels'), {})
   }
+}
+
+export function addFilter(query, filter) {
+  return {...query, filters: [...query.filters, filter]}
 }
 
 export function navigateToQuery(history, queryFrom, newData) {
   // if we update any data that we store in localstorage, make sure going back in history will
   // revert them
   if (newData.period && newData.period !== queryFrom.period) {
-    history.replace({ search: updatedQuery({ period: queryFrom.period}) })
+    history.replace({ search: updatedQuery({ period: queryFrom.period }) })
   }
 
   // then push the new query to the history
@@ -134,8 +138,28 @@ export function filtersBackwardsCompatibilityRedirect() {
   }
 }
 
+// Returns a boolean indicating whether the given query includes a
+// non-empty goal filterset containing a single, or multiple revenue
+// goals with the same currency. Used to decide whether to render
+// revenue metrics in a dashboard report or not.
+export function revenueAvailable(query, site) {
+  const revenueGoalsInFilter = site.revenueGoals.filter((rg) => {
+    const goalFilters = getFiltersByKeyPrefix(query, "goal")
+    
+    return goalFilters.some(([_op, _key, clauses]) => {
+      return clauses.includes(rg.event_name)
+    })
+  })
+
+  const singleCurrency = revenueGoalsInFilter.every((rg) => {
+    return rg.currency === revenueGoalsInFilter[0].currency
+  })
+
+  return revenueGoalsInFilter.length > 0 && singleCurrency
+}
+
 function QueryLink(props) {
-  const {query, history, to, className, children} = props
+  const { query, history, to, className, children } = props
 
   function onClick(e) {
     e.preventDefault()
@@ -167,7 +191,7 @@ function QueryButton({ history, query, to, disabled, className, children, onClic
         event.preventDefault()
         navigateToQuery(history, query, to)
         if (onClick) onClick(event)
-        history.push({ pathname: window.location.pathname, search: updatedQuery(to) })
+        history.push({ search: updatedQuery(to) })
       }}
       type="button"
       disabled={disabled}
