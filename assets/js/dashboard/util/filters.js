@@ -99,6 +99,10 @@ export function hasGoalFilter(query) {
   return getFiltersByKeyPrefix(query, "goal").length > 0
 }
 
+export function isRealTimeDashboard(query) {
+  return query?.period === 'realtime'
+}
+
 // Note: Currently only a single goal filter can be applied at a time.
 export function getGoalFilter(query) {
   return getFiltersByKeyPrefix(query, "goal")[0] || null
@@ -119,8 +123,8 @@ export function formatFilterGroup(filterGroup) {
 export function cleanLabels(filters, labels, mergedFilterKey, mergedLabels) {
   const filteredBy = Object.fromEntries(
     filters
-    .flatMap(([_operation, filterKey, clauses]) => ['country', 'region', 'city'].includes(filterKey) ? clauses : [])
-    .map((value) => [value, true])
+      .flatMap(([_operation, filterKey, clauses]) => ['country', 'region', 'city'].includes(filterKey) ? clauses : [])
+      .map((value) => [value, true])
   )
   let result = { ...labels }
   for (const value in labels) {
@@ -147,7 +151,6 @@ export function serializeApiFilters(filters) {
     if (filterKey.startsWith(EVENT_PROPS_PREFIX) || EVENT_FILTER_KEYS.has(filterKey)) {
       apiFilterKey = `event:${filterKey}`
     }
-    clauses = clauses.map((value) => value.toString())
     return [operation, apiFilterKey, clauses]
   })
 
@@ -161,8 +164,15 @@ export function fetchSuggestions(apiPath, query, input, additionalFilter) {
 
 function queryForSuggestions(query, additionalFilter) {
   let filters = query.filters
-  if (additionalFilter && additionalFilter[2].length > 0) {
-    filters = filters.concat([additionalFilter])
+  if (additionalFilter) {
+    const [_operation, filterKey, clauses] = additionalFilter
+
+    // For suggestions, we remove already-applied filter with same key from query and add new filter (if feasible)
+    if (clauses.length > 0) {
+      filters = replaceFilterByPrefix(query, filterKey, additionalFilter)
+    } else {
+      filters = omitFiltersByKeyPrefix(query, filterKey)
+    }
   }
   return { ...query, filters }
 }

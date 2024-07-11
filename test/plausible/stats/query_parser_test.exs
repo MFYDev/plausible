@@ -197,14 +197,14 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
           "metrics" => ["visitors"],
           "date_range" => "all",
           "filters" => [
-            ["is", "visit:#{unquote(dimension)}", ["foo"]]
+            ["is", "visit:#{unquote(dimension)}", ["ab"]]
           ]
         }
         |> check_success(site, %{
           metrics: [:visitors],
           date_range: @date_range,
           filters: [
-            [:is, "visit:#{unquote(dimension)}", ["foo"]]
+            [:is, "visit:#{unquote(dimension)}", ["ab"]]
           ],
           dimensions: [],
           order_by: nil,
@@ -244,6 +244,65 @@ defmodule Plausible.Stats.Filters.QueryParserTest do
         "filters" => "foobar"
       }
       |> check_error(site, ~r/Invalid filters passed/)
+    end
+
+    test "numeric filter is invalid", %{site: site} do
+      %{
+        "metrics" => ["visitors"],
+        "date_range" => "all",
+        "filters" => [["is", "visit:os_version", [123]]]
+      }
+      |> check_error(site, ~r/Invalid filter /)
+    end
+
+    test "numbers and strings are valid for visit:city", %{site: site} do
+      %{
+        "metrics" => ["visitors"],
+        "date_range" => "all",
+        "filters" => [["is", "visit:city", [123, 456]]]
+      }
+      |> check_success(site, %{
+        metrics: [:visitors],
+        date_range: @date_range,
+        filters: [
+          [:is, "visit:city", [123, 456]]
+        ],
+        dimensions: [],
+        order_by: nil,
+        timezone: site.timezone,
+        include: %{imports: false, time_labels: false},
+        preloaded_goals: []
+      })
+
+      %{
+        "metrics" => ["visitors"],
+        "date_range" => "all",
+        "filters" => [["is", "visit:city", ["123", "456"]]]
+      }
+      |> check_success(site, %{
+        metrics: [:visitors],
+        date_range: @date_range,
+        filters: [
+          [:is, "visit:city", ["123", "456"]]
+        ],
+        dimensions: [],
+        order_by: nil,
+        timezone: site.timezone,
+        include: %{imports: false, time_labels: false},
+        preloaded_goals: []
+      })
+    end
+
+    test "invalid visit:country filter", %{site: site} do
+      %{
+        "metrics" => ["visitors"],
+        "date_range" => "all",
+        "filters" => [["is", "visit:country", ["USA"]]]
+      }
+      |> check_error(
+        site,
+        ~r/Invalid visit:country filter, visit:country needs to be a valid 2-letter country code/
+      )
     end
   end
 
