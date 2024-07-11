@@ -15,13 +15,11 @@ jobs:
     # REQUIRED step
     # Step 1: run a standard checkout action, provided by github
     - name: Checkout target repo
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         # optional: set the branch to checkout,
         # sync action checks out your 'target_sync_branch' anyway
         ref:  master
-        # REQUIRED if your upstream repo is private (see wiki)
-        persist-credentials: false
 
     # REQUIRED step
     # Step 2: run the sync action
@@ -33,9 +31,6 @@ jobs:
         target_repo_token: ${{ secrets.SYNC_TOKEN }}
         upstream_sync_branch: master
         upstream_sync_repo: plausible/analytics
-
-        # Set test_mode true to run tests instead of the true action!!
-        test_mode: false
       
     # Step 3: Display a sample message based on the sync output var 'has_new_commits'
     - name: New commits found
