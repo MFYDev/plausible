@@ -1,5 +1,10 @@
 name: 'Upstream Sync'
 
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
 on:
   schedule:
     - cron:  '0 3 * * *'  # every day at 3am
