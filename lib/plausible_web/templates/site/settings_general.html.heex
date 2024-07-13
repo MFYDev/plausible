@@ -109,9 +109,10 @@
       </a>
     </div>
 
-    <div :if={Plausible.Verification.enabled?(@current_user)}>
+    <div :if={Plausible.Verification.enabled?()}>
       <%= live_render(@conn, PlausibleWeb.Live.Verification,
         session: %{
+          "open_modal?" => !!@conn.params["launch_verification"],
           "site_id" => @site.id,
           "domain" => @site.domain,
           "modal?" => true,
