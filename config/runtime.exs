@@ -88,15 +88,6 @@ case secret_key_base do
     nil
 end
 
-db_url =
-  get_var_from_path_or_env(
-    config_dir,
-    "DATABASE_URL",
-    "postgres://postgres:postgres@plausible_db:5432/plausible_db"
-  )
-
-db_socket_dir = get_var_from_path_or_env(config_dir, "DATABASE_SOCKET_DIR")
-
 super_admin_user_ids =
   get_var_from_path_or_env(config_dir, "ADMIN_USER_IDS", "")
   |> String.split(",")
@@ -153,19 +144,31 @@ end
 
 # Can be generated  with `Base.encode64(:crypto.strong_rand_bytes(32))` from
 # iex shell or `openssl rand -base64 32` from command line.
-totp_vault_key = get_var_from_path_or_env(config_dir, "TOTP_VAULT_KEY", nil)
+totp_vault_key =
+  if totp_vault_key_base64 = get_var_from_path_or_env(config_dir, "TOTP_VAULT_KEY") do
+    case Base.decode64(totp_vault_key_base64) do
+      {:ok, totp_vault_key} ->
+        if byte_size(totp_vault_key) == 32 do
+          totp_vault_key
+        else
+          raise ArgumentError, """
+          TOTP_VAULT_KEY must be Base64 encoded 32 bytes, e.g. `openssl rand -base64 32`.
+          Got Base64 encoded #{byte_size(totp_vault_key)} bytes.
+          More info: https://github.com/plausible/community-edition/tree/v2.1.1#quick-start
+          """
+        end
 
-case totp_vault_key do
-  nil ->
-    raise "TOTP_VAULT_KEY configuration option is required. See https://github.com/plausible/community-edition/tree/v2.1.0?tab=readme-ov-file#quick-start"
-
-  key ->
-    if byte_size(Base.decode64!(key)) != 32 do
-      raise "TOTP_VAULT_KEY must exactly 32 bytes long. See https://github.com/plausible/community-edition/tree/v2.1.0?tab=readme-ov-file#quick-start"
+      :error ->
+        raise ArgumentError, """
+        TOTP_VAULT_KEY must be Base64 encoded 32 bytes, e.g. `openssl rand -base64 32`
+        More info: https://github.com/plausible/community-edition/tree/v2.1.1#quick-start
+        """
     end
-end
+  else
+    Plug.Crypto.KeyGenerator.generate(secret_key_base, "totp", length: 32, iterations: 100_000)
+  end
 
-### Mandatory params End
+config :plausible, Plausible.Auth.TOTP, vault_key: totp_vault_key
 
 build_metadata_raw = get_var_from_path_or_env(config_dir, "BUILD_METADATA", "{}")
 
@@ -196,8 +199,6 @@ runtime_metadata = [
 ]
 
 config :plausible, :runtime_metadata, runtime_metadata
-
-config :plausible, Plausible.Auth.TOTP, vault_key: totp_vault_key
 
 sentry_dsn = get_var_from_path_or_env(config_dir, "SENTRY_DSN")
 honeycomb_api_key = get_var_from_path_or_env(config_dir, "HONEYCOMB_API_KEY")
@@ -323,7 +324,7 @@ config :plausible, PlausibleWeb.Endpoint,
   websocket_url: websocket_url,
   secure_cookie: secure_cookie
 
-maybe_ipv6 =
+db_maybe_ipv6 =
   if get_var_from_path_or_env(config_dir, "ECTO_IPV6") do
     if config_env() in [:ce, :ce_dev, :ce_test] do
       Logger.warning(
@@ -336,12 +337,56 @@ maybe_ipv6 =
     []
   end
 
-db_cacertfile = get_var_from_path_or_env(config_dir, "DATABASE_CACERTFILE", CAStore.file_path())
+db_url =
+  get_var_from_path_or_env(
+    config_dir,
+    "DATABASE_URL",
+    "postgres://postgres:postgres@plausible_db:5432/plausible_db"
+  )
 
-if is_nil(db_socket_dir) do
+if db_socket_dir = get_var_from_path_or_env(config_dir, "DATABASE_SOCKET_DIR") do
+  Logger.warning("""
+  DATABASE_SOCKET_DIR is deprecated, please use DATABASE_URL instead:
+
+      DATABASE_URL=postgresql://postgres:postgres@#{URI.encode_www_form(db_socket_dir)}/plausible_db
+
+  or
+
+      DATABASE_URL=postgresql:///plausible_db?host=#{db_socket_dir}"
+
+  """)
+end
+
+db_cacertfile = get_var_from_path_or_env(config_dir, "DATABASE_CACERTFILE", CAStore.file_path())
+%URI{host: db_host} = db_uri = URI.parse(db_url)
+db_socket_dir? = String.starts_with?(db_host, "%2F") or db_host == ""
+
+if db_socket_dir? do
+  [database] = String.split(db_uri.path, "/", trim: true)
+
+  socket_dir =
+    if db_host == "" do
+      db_host = (db_uri.query || "") |> URI.decode_query() |> Map.get("host")
+      db_host || raise ArgumentError, "DATABASE_URL=#{db_url} doesn't include host info"
+    else
+      URI.decode_www_form(db_host)
+    end
+
+  config :plausible, Plausible.Repo,
+    socket_dir: socket_dir,
+    database: database
+
+  if userinfo = db_uri.userinfo do
+    [username, password] = String.split(userinfo, ":")
+
+    config :plausible, Plausible.Repo,
+      username: username,
+      password: password
+  end
+else
   config :plausible, Plausible.Repo,
     url: db_url,
-    socket_options: maybe_ipv6,
+    socket_options: db_maybe_ipv6,
     ssl_opts: [
       cacertfile: db_cacertfile,
       verify: :verify_peer,
@@ -349,10 +394,6 @@ if is_nil(db_socket_dir) do
         match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
       ]
     ]
-else
-  config :plausible, Plausible.Repo,
-    socket_dir: db_socket_dir,
-    database: get_var_from_path_or_env(config_dir, "DATABASE_NAME", "plausible")
 end
 
 sentry_app_version = runtime_metadata[:version] || app_version
@@ -504,13 +545,24 @@ case mailer_adapter do
 
     if relay = get_var_from_path_or_env(config_dir, "SMTP_HOST_ADDR") do
       port = get_int_from_path_or_env(config_dir, "SMTP_HOST_PORT", 25)
-      username = get_var_from_path_or_env(config_dir, "SMTP_USER_NAME")
-      password = get_var_from_path_or_env(config_dir, "SMTP_USER_PWD")
+      config :plausible, Plausible.Mailer, relay: relay, port: port
+    end
 
-      config :plausible, Plausible.Mailer,
-        auth: [username: username, password: password],
-        relay: relay,
-        port: port
+    username = get_var_from_path_or_env(config_dir, "SMTP_USER_NAME")
+    password = get_var_from_path_or_env(config_dir, "SMTP_USER_PWD")
+
+    cond do
+      username && password ->
+        config :plausible, Plausible.Mailer, auth: [username: username, password: password]
+
+      username || password ->
+        raise ArgumentError, """
+        Both SMTP_USER_NAME and SMTP_USER_PWD must be set for SMTP authentication.
+        Please provide values for both environment variables.
+        """
+
+      _both_nil = true ->
+        nil
     end
 
   "Bamboo.LocalAdapter" ->
