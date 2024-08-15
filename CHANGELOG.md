@@ -8,12 +8,14 @@ All notable changes to this project will be documented in this file.
 - Support contains filter for goals
 - UI to edit funnels
 - Add Details views for browsers, browser versions, os-s, os versions, and screen sizes reports
-- Add a search functionality in all Details views, except for Countries, Regions, and Cities
+- Add a search functionality in all Details views
 - Icons for browsers plausible/analytics#4239
 - Automatic custom property selection in the dashboard Properties report
 - Add `does_not_contain` filter support to dashboard
 - Traffic drop notifications plausible/analytics#4300
 - Add search and pagination functionality into Google Keywords > Details modal
+- ClickHouse system.query_log table log_comment column now contains information about source of queries. Useful for debugging
+- New /debug/clickhouse route for super admins which shows information on clickhouse queries executed by user
 
 ### Removed
 - Deprecate `ECTO_IPV6` and `ECTO_CH_IPV6` env vars in CE plausible/analytics#4245
