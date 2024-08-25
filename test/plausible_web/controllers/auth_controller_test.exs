@@ -324,7 +324,7 @@ defmodule PlausibleWeb.AuthControllerTest do
   describe "GET /login_form" do
     test "shows the login form", %{conn: conn} do
       conn = get(conn, "/login")
-      assert html_response(conn, 200) =~ "Enter your email and password"
+      assert html_response(conn, 200) =~ "Enter your account credentials"
     end
   end
 
@@ -409,7 +409,7 @@ defmodule PlausibleWeb.AuthControllerTest do
       conn = post(conn, "/login", email: "user@example.com", password: "password")
 
       assert get_session(conn, :current_user_id) == nil
-      assert html_response(conn, 200) =~ "Enter your email and password"
+      assert html_response(conn, 200) =~ "Enter your account credentials"
     end
 
     test "bad password - renders login form again", %{conn: conn} do
@@ -417,7 +417,7 @@ defmodule PlausibleWeb.AuthControllerTest do
       conn = post(conn, "/login", email: user.email, password: "wrong")
 
       assert get_session(conn, :current_user_id) == nil
-      assert html_response(conn, 200) =~ "Enter your email and password"
+      assert html_response(conn, 200) =~ "Enter your account credentials"
     end
 
     test "limits login attempts to 5 per minute" do
@@ -503,9 +503,39 @@ defmodule PlausibleWeb.AuthControllerTest do
 
       assert location = "/login" = redirected_to(conn, 302)
 
+      # cookie state is as expected for logged out user
+      assert conn.private[:plug_session_info] == :renew
+      assert conn.resp_cookies["logged_in"].max_age == 0
+      assert get_session(conn, :current_user_id) == nil
+
       {:ok, %{conn: conn}} = PlausibleWeb.FirstLaunchPlug.Test.skip(%{conn: recycle(conn)})
       conn = get(conn, location)
       assert html_response(conn, 200) =~ "Password updated successfully"
+    end
+  end
+
+  describe "GET /logout" do
+    setup [:create_user, :log_in]
+
+    test "redirects the user to root", %{conn: conn} do
+      conn = get(conn, "/logout")
+
+      assert location = "/" = redirected_to(conn, 302)
+
+      # cookie state is as expected for logged out user
+      assert conn.private[:plug_session_info] == :renew
+      assert conn.resp_cookies["logged_in"].max_age == 0
+      assert get_session(conn, :current_user_id) == nil
+
+      {:ok, %{conn: conn}} = PlausibleWeb.FirstLaunchPlug.Test.skip(%{conn: recycle(conn)})
+      conn = get(conn, location)
+      assert html_response(conn, 200) =~ "Welcome to Plausible!"
+    end
+
+    test "redirects user to `redirect` param when provided", %{conn: conn} do
+      conn = get(conn, "/logout", %{redirect: "/docs"})
+
+      assert redirected_to(conn, 302) == "/docs"
     end
   end
 

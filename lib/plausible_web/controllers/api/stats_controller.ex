@@ -137,7 +137,6 @@ defmodule PlausibleWeb.Api.StatsController do
         comparison_plot: comparison_result && plot_timeseries(comparison_result, metric),
         comparison_labels: comparison_result && label_timeseries(comparison_result, nil),
         present_index: present_index,
-        interval: query.interval,
         includes_imported: includes_imported?(query, comparison_query),
         imports_exist: site.complete_import_ids != [],
         full_intervals: full_intervals
@@ -273,7 +272,7 @@ defmodule PlausibleWeb.Api.StatsController do
 
         Enum.find_index(dates, &(&1 == current_date))
 
-      "date" ->
+      "day" ->
         current_date =
           Timex.now(site.timezone)
           |> Timex.to_date()
@@ -750,8 +749,12 @@ defmodule PlausibleWeb.Api.StatsController do
 
     query = Query.from(site, params, debug_metadata(conn))
 
-    user_id = get_session(conn, :current_user_id)
-    is_admin = user_id && Plausible.Sites.has_admin_access?(user_id, site)
+    is_admin =
+      if current_user = conn.assigns[:current_user] do
+        Plausible.Sites.has_admin_access?(current_user.id, site)
+      else
+        false
+      end
 
     pagination = {
       to_int(params["limit"], 9),

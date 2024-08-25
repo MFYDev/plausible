@@ -12,7 +12,7 @@ defmodule Plausible.Stats.Timeseries do
   @time_dimension %{
     "month" => "time:month",
     "week" => "time:week",
-    "date" => "time:day",
+    "day" => "time:day",
     "hour" => "time:hour",
     "minute" => "time:minute"
   }
@@ -40,7 +40,7 @@ defmodule Plausible.Stats.Timeseries do
 
     q
     |> ClickhouseRepo.all(query: query)
-    |> QueryResult.from(query_with_metrics)
+    |> QueryResult.from(site, query_with_metrics)
     |> build_timeseries_result(query_with_metrics, currency)
     |> transform_keys(%{group_conversion_rate: :conversion_rate})
   end
