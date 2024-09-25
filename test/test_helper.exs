@@ -20,10 +20,24 @@ if :minio in Keyword.fetch!(ExUnit.configuration(), :include) do
   Plausible.TestUtils.ensure_minio()
 end
 
+default_exclude = [:slow, :minio, :migrations]
+
+# warm up ConCache until https://github.com/sasa1977/con_cache/pull/79
+:code.ensure_loaded(ConCache.Lock.Resource)
+
+for i <- 1..(System.schedulers_online() * 2) do
+  Plausible.Cache.Adapter.with_lock(
+    :sessions,
+    {i, i + 1},
+    500,
+    fn -> :warmup end
+  )
+end
+
 if Mix.env() == :ce_test do
   IO.puts("Test mode: Community Edition")
-  ExUnit.configure(exclude: [:slow, :minio, :ee_only])
+  ExUnit.configure(exclude: [:ee_only | default_exclude])
 else
   IO.puts("Test mode: Enterprise Edition")
-  ExUnit.configure(exclude: [:slow, :minio, :ce_build_only])
+  ExUnit.configure(exclude: [:ce_build_only | default_exclude])
 end

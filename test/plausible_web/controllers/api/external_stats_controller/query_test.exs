@@ -1,7 +1,7 @@
 defmodule PlausibleWeb.Api.ExternalStatsController.QueryTest do
   use PlausibleWeb.ConnCase
 
-  @user_id 1231
+  @user_id Enum.random(1000..9999)
 
   setup [:create_user, :create_new_site, :create_api_key, :use_api_key]
 
@@ -94,6 +94,34 @@ defmodule PlausibleWeb.Api.ExternalStatsController.QueryTest do
           "date_range" => "all",
           "metrics" => ["pageviews", "visitors", "bounce_rate", "visit_duration"],
           "filters" => [["is", "visit:source", ["Google"]]]
+        })
+
+      assert json_response(conn, 200)["results"] == [
+               %{"metrics" => [2, 1, 0, 1500], "dimensions" => []}
+             ]
+    end
+
+    test "can filter by channel", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview,
+          referrer_source: "Google",
+          channel: "Organic Search",
+          user_id: @user_id,
+          timestamp: ~N[2021-01-01 00:00:00]
+        ),
+        build(:pageview,
+          user_id: @user_id,
+          timestamp: ~N[2021-01-01 00:25:00]
+        ),
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
+      ])
+
+      conn =
+        post(conn, "/api/v2/query", %{
+          "site_id" => site.domain,
+          "date_range" => "all",
+          "metrics" => ["pageviews", "visitors", "bounce_rate", "visit_duration"],
+          "filters" => [["is", "visit:channel", ["Organic Search"]]]
         })
 
       assert json_response(conn, 200)["results"] == [
@@ -752,7 +780,7 @@ defmodule PlausibleWeb.Api.ExternalStatsController.QueryTest do
       assert json_response(conn, 200)["results"] == [%{"metrics" => [2], "dimensions" => []}]
     end
 
-    test "negated contains page filter", %{conn: conn, site: site} do
+    test "contains_not page filter", %{conn: conn, site: site} do
       populate_stats(site, [
         build(:pageview, pathname: "/en/page1"),
         build(:pageview, pathname: "/en/page2"),
@@ -765,11 +793,45 @@ defmodule PlausibleWeb.Api.ExternalStatsController.QueryTest do
           "date_range" => "all",
           "metrics" => ["visitors"],
           "filters" => [
-            ["does_not_contain", "event:page", ["/en/"]]
+            ["contains_not", "event:page", ["/en/"]]
           ]
         })
 
       assert json_response(conn, 200)["results"] == [%{"metrics" => [1], "dimensions" => []}]
+    end
+
+    test "contains with and/or/not filters", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview, pathname: "/en/page1"),
+        build(:pageview, pathname: "/en/page2"),
+        build(:pageview, pathname: "/eng/page1"),
+        build(:pageview, pathname: "/pl/page1"),
+        build(:pageview, pathname: "/gb/page1")
+      ])
+
+      conn =
+        post(conn, "/api/v2/query", %{
+          "site_id" => site.domain,
+          "date_range" => "all",
+          "metrics" => ["visitors"],
+          "filters" => [
+            [
+              "or",
+              [
+                [
+                  "and",
+                  [
+                    ["contains", "event:page", ["/en"]],
+                    ["not", ["contains", "event:page", ["/eng"]]]
+                  ]
+                ],
+                ["contains", "event:page", ["/gb"]]
+              ]
+            ]
+          ]
+        })
+
+      assert json_response(conn, 200)["results"] == [%{"metrics" => [3], "dimensions" => []}]
     end
 
     test "contains and member filter combined", %{conn: conn, site: site} do
@@ -812,6 +874,150 @@ defmodule PlausibleWeb.Api.ExternalStatsController.QueryTest do
         })
 
       assert json_response(conn, 200)["results"] == [%{"metrics" => [3], "dimensions" => []}]
+    end
+
+    test "`matches` operator", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview, pathname: "/user/1234"),
+        build(:pageview, pathname: "/user/789/contributions"),
+        build(:pageview, pathname: "/blog/user/1234"),
+        build(:pageview, pathname: "/user/ef/contributions"),
+        build(:pageview, pathname: "/other/path")
+      ])
+
+      conn =
+        post(conn, "/api/v2/query", %{
+          "site_id" => site.domain,
+          "date_range" => "all",
+          "metrics" => ["visitors"],
+          "filters" => [
+            ["matches", "event:page", ["^/user/[0-9]+"]]
+          ]
+        })
+
+      assert json_response(conn, 200)["results"] == [%{"metrics" => [2], "dimensions" => []}]
+    end
+
+    test "`matches_not` operator", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview, pathname: "/user/1234"),
+        build(:pageview, pathname: "/user/789/contributions"),
+        build(:pageview, pathname: "/blog/user/1234"),
+        build(:pageview, pathname: "/user/ef/contributions"),
+        build(:pageview, pathname: "/other/path")
+      ])
+
+      conn =
+        post(conn, "/api/v2/query", %{
+          "site_id" => site.domain,
+          "date_range" => "all",
+          "metrics" => ["visitors"],
+          "filters" => [
+            ["matches_not", "event:page", ["^/user/[0-9]+"]]
+          ]
+        })
+
+      assert json_response(conn, 200)["results"] == [%{"metrics" => [3], "dimensions" => []}]
+    end
+
+    test "`contains` and `contains_not` operator with custom properties", %{
+      conn: conn,
+      site: site
+    } do
+      populate_stats(site, [
+        build(:pageview,
+          "meta.key": ["tier", "value"],
+          "meta.value": ["large-1", "ax"]
+        ),
+        build(:pageview,
+          "meta.key": ["tier", "value"],
+          "meta.value": ["small-1", "bx"]
+        ),
+        build(:pageview,
+          "meta.key": ["tier", "value"],
+          "meta.value": ["small-1", "ax"]
+        ),
+        build(:pageview,
+          "meta.key": ["tier", "value"],
+          "meta.value": ["small-2", "bx"]
+        ),
+        build(:pageview,
+          "meta.key": ["tier", "value"],
+          "meta.value": ["small-2", "cx"]
+        ),
+        build(:pageview,
+          "meta.key": ["tier"],
+          "meta.value": ["small-3"]
+        ),
+        build(:pageview,
+          "meta.key": ["value"],
+          "meta.value": ["ax"]
+        ),
+        build(:pageview)
+      ])
+
+      conn =
+        post(conn, "/api/v2/query", %{
+          "site_id" => site.domain,
+          "date_range" => "all",
+          "metrics" => ["visitors"],
+          "filters" => [
+            ["contains", "event:props:tier", ["small"]],
+            ["contains_not", "event:props:value", ["b", "c"]]
+          ]
+        })
+
+      assert json_response(conn, 200)["results"] == [%{"metrics" => [1], "dimensions" => []}]
+    end
+
+    test "`matches` and `matches_not` operator with custom properties", %{
+      conn: conn,
+      site: site
+    } do
+      populate_stats(site, [
+        build(:pageview,
+          "meta.key": ["tier", "value"],
+          "meta.value": ["large-1", "a"]
+        ),
+        build(:pageview,
+          "meta.key": ["tier", "value"],
+          "meta.value": ["small-1", "b"]
+        ),
+        build(:pageview,
+          "meta.key": ["tier", "value"],
+          "meta.value": ["small-1", "a"]
+        ),
+        build(:pageview,
+          "meta.key": ["tier", "value"],
+          "meta.value": ["small-2", "b"]
+        ),
+        build(:pageview,
+          "meta.key": ["tier", "value"],
+          "meta.value": ["small-2", "c"]
+        ),
+        build(:pageview,
+          "meta.key": ["tier"],
+          "meta.value": ["small-3"]
+        ),
+        build(:pageview,
+          "meta.key": ["value"],
+          "meta.value": ["a"]
+        ),
+        build(:pageview)
+      ])
+
+      conn =
+        post(conn, "/api/v2/query", %{
+          "site_id" => site.domain,
+          "date_range" => "all",
+          "metrics" => ["visitors"],
+          "filters" => [
+            ["matches", "event:props:tier", ["small.+"]],
+            ["matches_not", "event:props:value", ["b|c"]]
+          ]
+        })
+
+      assert json_response(conn, 200)["results"] == [%{"metrics" => [1], "dimensions" => []}]
     end
 
     test "handles filtering by visit:country", %{
@@ -1193,6 +1399,38 @@ defmodule PlausibleWeb.Api.ExternalStatsController.QueryTest do
     assert results == [
              %{"dimensions" => ["Google"], "metrics" => [2]},
              %{"dimensions" => ["Direct / None"], "metrics" => [1]}
+           ]
+  end
+
+  test "breakdown by visit:channel", %{conn: conn, site: site} do
+    populate_stats(site, [
+      build(:pageview,
+        channel: "Organic Search",
+        timestamp: ~N[2021-01-01 00:00:00]
+      ),
+      build(:pageview,
+        channel: "Organic Search",
+        timestamp: ~N[2021-01-01 00:25:00]
+      ),
+      build(:pageview,
+        channel: "",
+        timestamp: ~N[2021-01-01 00:00:00]
+      )
+    ])
+
+    conn =
+      post(conn, "/api/v2/query", %{
+        "site_id" => site.domain,
+        "metrics" => ["visitors"],
+        "date_range" => "all",
+        "dimensions" => ["visit:channel"]
+      })
+
+    %{"results" => results} = json_response(conn, 200)
+
+    assert results == [
+             %{"dimensions" => ["Organic Search"], "metrics" => [2]},
+             %{"dimensions" => ["Direct"], "metrics" => [1]}
            ]
   end
 
@@ -2896,6 +3134,11 @@ defmodule PlausibleWeb.Api.ExternalStatsController.QueryTest do
         referrer_source: "Google",
         timestamp: ~N[2021-01-02 00:00:00]
       ),
+      build(:pageview,
+        referrer_source: "Google",
+        timestamp: ~N[2021-01-02 00:00:00]
+      ),
+      build(:pageview, timestamp: ~N[2021-01-03 00:00:00]),
       build(:pageview, timestamp: ~N[2021-01-03 00:00:00]),
       build(:pageview,
         referrer_source: "Twitter",
@@ -2912,11 +3155,11 @@ defmodule PlausibleWeb.Api.ExternalStatsController.QueryTest do
       })
 
     assert json_response(conn, 200)["results"] == [
-             %{"dimensions" => ["2021-01-01 00:00:00", "Google"], "metrics" => [1]},
-             %{"dimensions" => ["2021-01-02 00:00:00", "Google"], "metrics" => [1]},
-             %{"dimensions" => ["2021-01-02 00:00:00", "Direct / None"], "metrics" => [1]},
-             %{"dimensions" => ["2021-01-03 00:00:00", "Direct / None"], "metrics" => [1]},
-             %{"dimensions" => ["2021-01-03 00:00:00", "Twitter"], "metrics" => [1]}
+             %{"dimensions" => ["2021-01-01", "Google"], "metrics" => [1]},
+             %{"dimensions" => ["2021-01-02", "Google"], "metrics" => [2]},
+             %{"dimensions" => ["2021-01-02", "Direct / None"], "metrics" => [1]},
+             %{"dimensions" => ["2021-01-03", "Direct / None"], "metrics" => [2]},
+             %{"dimensions" => ["2021-01-03", "Twitter"], "metrics" => [1]}
            ]
   end
 
@@ -2974,5 +3217,174 @@ defmodule PlausibleWeb.Api.ExternalStatsController.QueryTest do
              %{"dimensions" => ["Estonia", "Harjumaa", "Tallinn"], "metrics" => [1]},
              %{"dimensions" => ["United Kingdom", "London", "London"], "metrics" => [1]}
            ]
+  end
+
+  test "bounce rate calculation handles invalid session data gracefully", %{
+    conn: conn,
+    site: site
+  } do
+    # NOTE: At the time of this test is added, it appears it does _not_
+    # catch the regression on MacOS (ARM), regardless if Clickhouse is run
+    # natively or from a docker container. The test still does catch
+    # that regression when ran on Linux for instance (including CI).
+    user_id = System.unique_integer([:positive])
+
+    populate_stats(site, [
+      build(:pageview,
+        user_id: user_id,
+        pathname: "/",
+        timestamp: ~N[2021-01-01 00:00:00]
+      )
+    ])
+
+    first_session = Plausible.Cache.Adapter.get(:sessions, {site.id, user_id})
+
+    populate_stats(site, [
+      build(:pageview,
+        user_id: user_id,
+        pathname: "/",
+        timestamp: ~N[2021-01-01 00:01:00]
+      )
+    ])
+
+    Plausible.Cache.Adapter.put(:sessions, {site.id, user_id}, first_session)
+
+    populate_stats(site, [
+      build(:pageview,
+        user_id: user_id,
+        pathname: "/",
+        timestamp: ~N[2021-01-01 00:01:00]
+      )
+    ])
+
+    conn =
+      post(conn, "/api/v2/query", %{
+        "site_id" => site.domain,
+        "date_range" => "all",
+        "metrics" => ["bounce_rate"],
+        "dimensions" => ["event:page"]
+      })
+
+    assert json_response(conn, 200)["results"] == [
+             %{"dimensions" => ["/"], "metrics" => [0]}
+           ]
+  end
+
+  describe "using the returned query object in a new POST request" do
+    test "yields the same results for a simple aggregate query", %{conn: conn, site: site} do
+      Plausible.Site.changeset(site, %{timezone: "Europe/Tallinn"})
+      |> Plausible.Repo.update()
+
+      populate_stats(site, [
+        build(:pageview, user_id: @user_id, timestamp: ~N[2021-01-01 00:00:00]),
+        build(:pageview, user_id: @user_id, timestamp: ~N[2021-01-01 00:25:00]),
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
+      ])
+
+      conn1 =
+        post(conn, "/api/v2/query", %{
+          "site_id" => site.domain,
+          "metrics" => ["pageviews"],
+          "date_range" => "all"
+        })
+
+      assert %{"results" => results1, "query" => query} = json_response(conn1, 200)
+      assert results1 == [%{"metrics" => [3], "dimensions" => []}]
+
+      conn2 = post(conn, "/api/v2/query", query)
+
+      assert %{"results" => results2} = json_response(conn2, 200)
+      assert results2 == [%{"metrics" => [3], "dimensions" => []}]
+    end
+  end
+
+  describe "pagination" do
+    setup %{site: site} = context do
+      populate_stats(site, [
+        build(:pageview, pathname: "/1"),
+        build(:pageview, pathname: "/2"),
+        build(:pageview, pathname: "/3"),
+        build(:pageview, pathname: "/4"),
+        build(:pageview, pathname: "/5"),
+        build(:pageview, pathname: "/6"),
+        build(:pageview, pathname: "/7"),
+        build(:pageview, pathname: "/8")
+      ])
+
+      context
+    end
+
+    test "pagination above total count - all results are returned", %{conn: conn, site: site} do
+      conn =
+        post(conn, "/api/v2/query", %{
+          "site_id" => site.domain,
+          "metrics" => ["pageviews"],
+          "date_range" => "all",
+          "dimensions" => ["event:page"],
+          "order_by" => [["event:page", "asc"]],
+          "include" => %{"total_rows" => true},
+          "pagination" => %{"limit" => 10}
+        })
+
+      assert json_response(conn, 200)["results"] == [
+               %{"dimensions" => ["/1"], "metrics" => [1]},
+               %{"dimensions" => ["/2"], "metrics" => [1]},
+               %{"dimensions" => ["/3"], "metrics" => [1]},
+               %{"dimensions" => ["/4"], "metrics" => [1]},
+               %{"dimensions" => ["/5"], "metrics" => [1]},
+               %{"dimensions" => ["/6"], "metrics" => [1]},
+               %{"dimensions" => ["/7"], "metrics" => [1]},
+               %{"dimensions" => ["/8"], "metrics" => [1]}
+             ]
+
+      assert json_response(conn, 200)["meta"]["total_rows"] == 8
+    end
+
+    test "pagination with offset", %{conn: conn, site: site} do
+      query = %{
+        "site_id" => site.domain,
+        "metrics" => ["pageviews"],
+        "date_range" => "all",
+        "dimensions" => ["event:page"],
+        "order_by" => [["event:page", "asc"]],
+        "include" => %{"total_rows" => true}
+      }
+
+      conn1 = post(conn, "/api/v2/query", Map.put(query, "pagination", %{"limit" => 3}))
+
+      assert json_response(conn1, 200)["results"] == [
+               %{"dimensions" => ["/1"], "metrics" => [1]},
+               %{"dimensions" => ["/2"], "metrics" => [1]},
+               %{"dimensions" => ["/3"], "metrics" => [1]}
+             ]
+
+      assert json_response(conn1, 200)["meta"]["total_rows"] == 8
+
+      conn2 =
+        post(conn, "/api/v2/query", Map.put(query, "pagination", %{"limit" => 3, "offset" => 3}))
+
+      assert json_response(conn2, 200)["results"] == [
+               %{"dimensions" => ["/4"], "metrics" => [1]},
+               %{"dimensions" => ["/5"], "metrics" => [1]},
+               %{"dimensions" => ["/6"], "metrics" => [1]}
+             ]
+
+      assert json_response(conn2, 200)["meta"]["total_rows"] == 8
+
+      conn3 =
+        post(conn, "/api/v2/query", Map.put(query, "pagination", %{"limit" => 3, "offset" => 6}))
+
+      assert json_response(conn3, 200)["results"] == [
+               %{"dimensions" => ["/7"], "metrics" => [1]},
+               %{"dimensions" => ["/8"], "metrics" => [1]}
+             ]
+
+      assert json_response(conn3, 200)["meta"]["total_rows"] == 8
+
+      conn4 =
+        post(conn, "/api/v2/query", Map.put(query, "pagination", %{"limit" => 3, "offset" => 9}))
+
+      assert json_response(conn4, 200)["results"] == []
+    end
   end
 end

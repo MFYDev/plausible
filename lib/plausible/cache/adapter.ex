@@ -62,8 +62,13 @@ defmodule Plausible.Cache.Adapter do
   end
 
   @spec put(atom(), any(), any()) :: any()
-  def put(cache_name, key, value) do
-    :ok = ConCache.put(cache_name, key, value)
+  def put(cache_name, key, value, opts \\ []) do
+    if opts[:dirty?] do
+      :ok = ConCache.dirty_put(cache_name, key, value)
+    else
+      :ok = ConCache.put(cache_name, key, value)
+    end
+
     value
   catch
     :exit, _ ->
@@ -106,5 +111,20 @@ defmodule Plausible.Cache.Adapter do
     :exit, _ ->
       Logger.error("Error retrieving key from '#{inspect(cache_name)}'")
       []
+  end
+
+  @spec with_lock(atom(), any(), pos_integer(), (-> result)) :: {:ok, result} | {:error, :timeout}
+        when result: any()
+  def with_lock(cache_name, key, timeout, fun) do
+    result = ConCache.isolated(cache_name, key, timeout, fun)
+    {:ok, result}
+  catch
+    :exit, {:timeout, _} ->
+      Sentry.capture_message(
+        "Timeout while executing with lock on key in '#{inspect(cache_name)}'",
+        extra: %{key: key}
+      )
+
+      {:error, :timeout}
   end
 end

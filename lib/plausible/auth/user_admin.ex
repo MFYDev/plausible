@@ -20,7 +20,8 @@ defmodule Plausible.Auth.UserAdmin do
       allow_next_upgrade_override: nil,
       accept_traffic_until: %{
         help_text: "Change will take up to 15 minutes to propagate"
-      }
+      },
+      notes: %{type: :textarea, rows: 6}
     ]
   end
 
@@ -99,7 +100,7 @@ defmodule Plausible.Auth.UserAdmin do
         "ended"
 
       %{end_date: %Date{} = end_date} ->
-        days_left = Timex.diff(end_date, Timex.now(), :days)
+        days_left = Timex.diff(end_date, DateTime.utc_now(), :days)
         "#{days_left} days left"
     end
   end

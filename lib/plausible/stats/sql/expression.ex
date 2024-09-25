@@ -12,9 +12,10 @@ defmodule Plausible.Stats.SQL.Expression do
 
   import Ecto.Query
 
-  alias Plausible.Stats.{Query, SQL}
+  alias Plausible.Stats.{Query, Filters, SQL}
 
   @no_ref "Direct / None"
+  @no_channel "Direct"
   @not_set "(not set)"
 
   defmacrop field_or_blank_value(q, key, expr, empty_value) do
@@ -46,11 +47,13 @@ defmodule Plausible.Stats.SQL.Expression do
   end
 
   def select_dimension(q, key, "time:week", _table, query) do
+    date_range = Query.date_range(query)
+
     select_merge_as(q, [t], %{
       key =>
         weekstart_not_before(
           to_timezone(t.timestamp, ^query.timezone),
-          ^query.date_range.first
+          ^date_range.first
         )
     })
   end
@@ -80,27 +83,6 @@ defmodule Plausible.Stats.SQL.Expression do
   def select_dimension(q, key, "time:hour", _table, query) do
     select_merge_as(q, [t], %{
       key => fragment("toStartOfHour(toTimeZone(?, ?))", t.timestamp, ^query.timezone)
-    })
-  end
-
-  # :NOTE: This is not exposed in Query APIv2
-  def select_dimension(q, key, "time:minute", :sessions, %Query{
-        period: "30m"
-      }) do
-    select_merge_as(q, [s], %{
-      key =>
-        fragment(
-          "arrayJoin(range(dateDiff('minute', now(), ?), dateDiff('minute', now(), ?) + 1))",
-          s.start,
-          s.timestamp
-        )
-    })
-  end
-
-  # :NOTE: This is not exposed in Query APIv2
-  def select_dimension(q, key, "time:minute", _table, %Query{period: "30m"}) do
-    select_merge_as(q, [t], %{
-      key => fragment("dateDiff('minute', now(), ?)", t.timestamp)
     })
   end
 
@@ -167,6 +149,9 @@ defmodule Plausible.Stats.SQL.Expression do
 
   def select_dimension(q, key, "visit:source", _table, _query),
     do: field_or_blank_value(q, key, t.source, @no_ref)
+
+  def select_dimension(q, key, "visit:channel", _table, _query),
+    do: field_or_blank_value(q, key, t.channel, @no_channel)
 
   def select_dimension(q, key, "visit:referrer", _table, _query),
     do: field_or_blank_value(q, key, t.referrer, @no_ref)
@@ -267,13 +252,16 @@ defmodule Plausible.Stats.SQL.Expression do
 
   def session_metric(:bounce_rate, query) do
     # :TRICKY: If page is passed to query, we only count bounce rate where users _entered_ at page.
-    event_page_filter = Query.get_filter(query, "event:page")
+    event_page_filter = Filters.get_toplevel_filter(query, "event:page")
     condition = SQL.WhereBuilder.build_condition(:entry_page, event_page_filter)
 
     wrap_alias([], %{
       bounce_rate:
         fragment(
-          "toUInt32(ifNotFinite(round(sumIf(is_bounce * sign, ?) / sumIf(sign, ?) * 100), 0))",
+          # :TRICKY: Before PR #4493, we could have sessions where `sum(is_bounce * sign)`
+          # is negative, leading to an underflow and >100% bounce rate. This works around
+          # that issue.
+          "toUInt32(greatest(ifNotFinite(round(sumIf(is_bounce * sign, ?) / sumIf(sign, ?) * 100), 0), 0))",
           ^condition,
           ^condition
         ),

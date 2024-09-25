@@ -2,7 +2,6 @@ defmodule PlausibleWeb.Router do
   use PlausibleWeb, :router
   use Plausible
   import Phoenix.LiveView.Router
-  @two_weeks_in_seconds 60 * 60 * 24 * 14
 
   pipeline :browser do
     plug :accepts, ["html"]
@@ -11,9 +10,8 @@ defmodule PlausibleWeb.Router do
     plug :put_secure_browser_headers
     plug PlausibleWeb.Plugs.NoRobots
     on_ee(do: nil, else: plug(PlausibleWeb.FirstLaunchPlug, redirect_to: "/register"))
-    plug PlausibleWeb.SessionTimeoutPlug, timeout_after_seconds: @two_weeks_in_seconds
     plug PlausibleWeb.AuthPlug
-    plug PlausibleWeb.LastSeenPlug
+    plug PlausibleWeb.Plugs.UserSessionTouch
   end
 
   pipeline :shared_link do
@@ -26,12 +24,12 @@ defmodule PlausibleWeb.Router do
     plug :protect_from_forgery
   end
 
-  pipeline :focus_layout do
-    plug :put_root_layout, html: {PlausibleWeb.LayoutView, :focus}
-  end
-
   pipeline :app_layout do
     plug :put_root_layout, html: {PlausibleWeb.LayoutView, :app}
+  end
+
+  pipeline :external_api do
+    plug :accepts, ["json"]
   end
 
   pipeline :api do
@@ -43,7 +41,16 @@ defmodule PlausibleWeb.Router do
   pipeline :internal_stats_api do
     plug :accepts, ["json"]
     plug :fetch_session
-    plug PlausibleWeb.AuthorizeSiteAccess
+    plug PlausibleWeb.AuthPlug
+    plug PlausibleWeb.Plugs.AuthorizeSiteAccess
+    plug PlausibleWeb.Plugs.NoRobots
+  end
+
+  pipeline :docs_stats_api do
+    plug :accepts, ["json"]
+    plug :fetch_session
+    plug PlausibleWeb.AuthPlug
+    plug PlausibleWeb.Plugs.AuthorizeSiteAccess, [:admin, :super_admin, :owner]
     plug PlausibleWeb.Plugs.NoRobots
   end
 
@@ -58,6 +65,7 @@ defmodule PlausibleWeb.Router do
       plug PlausibleWeb.Plugs.NoRobots
       plug :fetch_session
 
+      plug PlausibleWeb.AuthPlug
       plug PlausibleWeb.SuperAdminOnlyPlug
     end
   end
@@ -69,7 +77,11 @@ defmodule PlausibleWeb.Router do
   on_ee do
     use Kaffy.Routes,
       scope: "/crm",
-      pipe_through: [PlausibleWeb.Plugs.NoRobots, PlausibleWeb.SuperAdminOnlyPlug]
+      pipe_through: [
+        PlausibleWeb.Plugs.NoRobots,
+        PlausibleWeb.AuthPlug,
+        PlausibleWeb.SuperAdminOnlyPlug
+      ]
   end
 
   on_ee do
@@ -144,6 +156,7 @@ defmodule PlausibleWeb.Router do
     get "/:domain/main-graph", StatsController, :main_graph
     get "/:domain/top-stats", StatsController, :top_stats
     get "/:domain/sources", StatsController, :sources
+    get "/:domain/channels", StatsController, :channels
     get "/:domain/utm_mediums", StatsController, :utm_mediums
     get "/:domain/utm_sources", StatsController, :utm_sources
     get "/:domain/utm_campaigns", StatsController, :utm_campaigns
@@ -184,8 +197,8 @@ defmodule PlausibleWeb.Router do
   scope "/api/docs", PlausibleWeb.Api do
     get "/query/schema.json", ExternalQueryApiController, :schema
 
-    scope assigns: %{} do
-      pipe_through :internal_stats_api
+    scope [] do
+      pipe_through :docs_stats_api
 
       post "/query", ExternalQueryApiController, :query
     end
@@ -217,27 +230,31 @@ defmodule PlausibleWeb.Router do
   end
 
   scope "/api", PlausibleWeb do
-    pipe_through :api
+    scope [] do
+      pipe_through :external_api
 
-    post "/event", Api.ExternalController, :event
-    get "/error", Api.ExternalController, :error
-    get "/health", Api.ExternalController, :health
-    get "/system", Api.ExternalController, :info
+      post "/event", Api.ExternalController, :event
+      get "/error", Api.ExternalController, :error
+      get "/health", Api.ExternalController, :health
+      get "/system", Api.ExternalController, :info
+    end
 
-    post "/paddle/webhook", Api.PaddleController, :webhook
-    get "/paddle/currency", Api.PaddleController, :currency
+    scope [] do
+      pipe_through :api
+      post "/paddle/webhook", Api.PaddleController, :webhook
+      get "/paddle/currency", Api.PaddleController, :currency
 
-    get "/:domain/status", Api.InternalController, :domain_status
-    put "/:domain/disable-feature", Api.InternalController, :disable_feature
+      put "/:domain/disable-feature", Api.InternalController, :disable_feature
 
-    get "/sites", Api.InternalController, :sites
+      get "/sites", Api.InternalController, :sites
+    end
   end
 
   scope "/", PlausibleWeb do
     pipe_through [:browser, :csrf]
 
     scope alias: Live, assigns: %{connect_live_socket: true} do
-      pipe_through [PlausibleWeb.RequireLoggedOutPlug, :focus_layout]
+      pipe_through [PlausibleWeb.RequireLoggedOutPlug, :app_layout]
 
       scope assigns: %{disable_registration_for: [:invite_only, true]} do
         pipe_through PlausibleWeb.Plugs.MaybeDisableRegistration
@@ -325,7 +342,6 @@ defmodule PlausibleWeb.Router do
     post "/sites", SiteController, :create_site
     get "/sites/:website/change-domain", SiteController, :change_domain
     put "/sites/:website/change-domain", SiteController, :change_domain_submit
-    get "/:website/change-domain-snippet", SiteController, :add_snippet_after_domain_change
     post "/sites/:website/make-public", SiteController, :make_public
     post "/sites/:website/make-private", SiteController, :make_private
     post "/sites/:website/weekly-report/enable", SiteController, :enable_weekly_report
@@ -391,7 +407,22 @@ defmodule PlausibleWeb.Router do
     get "/sites/:website/weekly-report/unsubscribe", UnsubscribeController, :weekly_report
     get "/sites/:website/monthly-report/unsubscribe", UnsubscribeController, :monthly_report
 
-    get "/:website/snippet", SiteController, :add_snippet
+    scope alias: Live, assigns: %{connect_live_socket: true} do
+      pipe_through [:app_layout, PlausibleWeb.RequireAccountPlug]
+
+      scope assigns: %{
+              dogfood_page_path: "/:website/installation"
+            } do
+        live "/:website/installation", Installation, :installation, as: :site
+      end
+
+      scope assigns: %{
+              dogfood_page_path: "/:website/verification"
+            } do
+        live "/:website/verification", Verification, :verification, as: :site
+      end
+    end
+
     get "/:website/settings", SiteController, :settings
     get "/:website/settings/general", SiteController, :settings_general
     get "/:website/settings/people", SiteController, :settings_people

@@ -114,7 +114,8 @@ defmodule PlausibleWeb.Api.ExternalStatsController.TimeseriesTest do
     end
   end
 
-  @user_id 123
+  @user_id Enum.random(1000..9999)
+
   test "shows hourly data for a certain date", %{conn: conn, site: site} do
     populate_stats(site, [
       build(:pageview, user_id: @user_id, timestamp: ~N[2021-01-01 00:00:00]),
@@ -718,6 +719,27 @@ defmodule PlausibleWeb.Api.ExternalStatsController.TimeseriesTest do
           "period" => "month",
           "date" => "2021-01-01",
           "filters" => "visit:source==Google"
+        })
+
+      res = json_response(conn, 200)
+      assert List.first(res["results"]) == %{"date" => "2021-01-01", "visitors" => 1}
+    end
+
+    test "can filter by channel", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview,
+          channel: "Organic Search",
+          timestamp: ~N[2021-01-01 00:00:00]
+        ),
+        build(:pageview, timestamp: ~N[2021-01-01 00:00:00])
+      ])
+
+      conn =
+        get(conn, "/api/v1/stats/timeseries", %{
+          "site_id" => site.domain,
+          "period" => "month",
+          "date" => "2021-01-01",
+          "filters" => "visit:channel==Organic Search"
         })
 
       res = json_response(conn, 200)
@@ -1609,6 +1631,34 @@ defmodule PlausibleWeb.Api.ExternalStatsController.TimeseriesTest do
 
       assert json_response(conn, 200)["warning"] =~
                "Imported stats are not included in the results because query parameters are not supported."
+    end
+
+    test "is not included for a day period and an appropriate warning is returned", %{
+      conn: conn,
+      site: site
+    } do
+      site_import = insert(:site_import, site: site)
+
+      populate_stats(site, site_import.id, [
+        build(:imported_visitors, visitors: 1, date: ~D[2021-01-01])
+      ])
+
+      conn =
+        conn
+        |> get("/api/v1/stats/timeseries", %{
+          "site_id" => site.domain,
+          "period" => "day",
+          "metrics" => "visitors",
+          "date" => "2021-01-01",
+          "with_imported" => "true"
+        })
+
+      assert %{"results" => results, "warning" => warning} = json_response(conn, 200)
+
+      Enum.each(results, &assert(&1["visitors"] == 0))
+
+      assert warning ==
+               "Imported stats are not included because the time dimension (i.e. the interval) is too short."
     end
 
     test "does not add a warning when there are no site imports", %{conn: conn, site: site} do

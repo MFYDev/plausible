@@ -4,7 +4,8 @@ import { useParams } from 'react-router-dom';
 import Modal from './modal';
 import { EVENT_PROPS_PREFIX, FILTER_GROUP_TO_MODAL_TYPE, formatFilterGroup, FILTER_OPERATIONS, getFilterGroup, FILTER_MODAL_TO_FILTER_GROUP, cleanLabels } from '../../util/filters';
 import { useQueryContext } from '../../query-context';
-import { shouldIgnoreKeypress } from '../../keybinding';
+import { useSiteContext } from '../../site-context';
+import { isModifierPressed, isTyping } from '../../keybinding';
 import FilterModalGroup from "./filter-modal-group";
 import { rootRoute } from '../../router';
 import { useAppNavigate } from '../../navigation/use-app-navigate';
@@ -62,7 +63,7 @@ class FilterModal extends React.Component {
   }
 
   handleKeydown(e) {
-    if (shouldIgnoreKeypress(e)) return
+    if (isTyping(e) || isModifierPressed(e)) return
 
     if (e.target.tagName === 'BODY' && e.key === 'Enter') {
       this.handleSubmit()
@@ -134,6 +135,14 @@ class FilterModal extends React.Component {
     })
   }
 
+  getFilterGroups() {
+    const groups = FILTER_MODAL_TO_FILTER_GROUP[this.props.modalType]
+    if (this.props.modalType === 'source' && !this.props.site.flags.channels) {
+      return groups.filter((group) => group !== 'channel')
+    }
+    return groups
+  }
+
   render() {
     return (
       <Modal maxWidth="460px">
@@ -144,7 +153,7 @@ class FilterModal extends React.Component {
         <div className="mt-4 border-b border-gray-300"></div>
         <main className="modal__content">
           <form className="flex flex-col" onSubmit={this.handleSubmit.bind(this)}>
-            {FILTER_MODAL_TO_FILTER_GROUP[this.props.modalType].map((filterGroup) => (
+            {this.getFilterGroups().map((filterGroup) => (
               <FilterModalGroup
                 key={filterGroup}
                 filterGroup={filterGroup}
@@ -189,12 +198,14 @@ export default function FilterModalWithRouter(props) {
   const navigate = useAppNavigate();
   const { field } = useParams()
   const { query } = useQueryContext()
+  const site = useSiteContext()
   return (
     <FilterModal
       {...props}
       modalType={field || 'page'}
       query={query}
       navigate={navigate}
+      site={site}
     />
   )
 }

@@ -1,40 +1,55 @@
 defmodule Plausible.Stats.Filters.QueryParser do
   @moduledoc false
 
-  alias Plausible.Stats.TableDecider
-  alias Plausible.Stats.Filters
-  alias Plausible.Stats.Query
-  alias Plausible.Stats.Metrics
-  alias Plausible.Stats.JSONSchema
+  alias Plausible.Stats.{TableDecider, Filters, Metrics, DateTimeRange, JSONSchema}
 
   @default_include %{
     imports: false,
-    time_labels: false
+    time_labels: false,
+    total_rows: false
+  }
+
+  @default_pagination %{
+    limit: 10_000,
+    offset: 0
   }
 
   def parse(site, schema_type, params, now \\ nil) when is_map(params) do
+    {now, date} =
+      if now do
+        {now, DateTime.shift_zone!(now, site.timezone) |> DateTime.to_date()}
+      else
+        {DateTime.utc_now(:second), today(site)}
+      end
+
     with :ok <- JSONSchema.validate(schema_type, params),
-         {:ok, date} <- parse_date(site, Map.get(params, "date"), now),
+         {:ok, date} <- parse_date(site, Map.get(params, "date"), date),
+         {:ok, raw_time_range} <-
+           parse_time_range(site, Map.get(params, "date_range"), date, now),
+         utc_time_range = raw_time_range |> DateTimeRange.to_timezone("Etc/UTC"),
          {:ok, metrics} <- parse_metrics(Map.get(params, "metrics", [])),
          {:ok, filters} <- parse_filters(Map.get(params, "filters", [])),
-         {:ok, date_range} <- parse_date_range(site, Map.get(params, "date_range"), date),
          {:ok, dimensions} <- parse_dimensions(Map.get(params, "dimensions", [])),
          {:ok, order_by} <- parse_order_by(Map.get(params, "order_by")),
          {:ok, include} <- parse_include(Map.get(params, "include", %{})),
+         {:ok, pagination} <- parse_pagination(Map.get(params, "pagination", %{})),
          preloaded_goals <- preload_goals_if_needed(site, filters, dimensions),
          query = %{
            metrics: metrics,
            filters: filters,
-           date_range: date_range,
+           utc_time_range: utc_time_range,
            dimensions: dimensions,
            order_by: order_by,
            timezone: site.timezone,
            preloaded_goals: preloaded_goals,
-           include: include
+           include: include,
+           pagination: pagination
          },
          :ok <- validate_order_by(query),
-         :ok <- validate_goal_filters(query),
          :ok <- validate_custom_props_access(site, query),
+         :ok <- validate_toplevel_only_filter_dimension(query),
+         :ok <- validate_special_metrics_filters(query),
+         :ok <- validate_filtered_goals_exist(query),
          :ok <- validate_metrics(query),
          :ok <- validate_include(query) do
       {:ok, query}
@@ -60,19 +75,31 @@ defmodule Plausible.Stats.Filters.QueryParser do
 
   defp parse_filter(filter) do
     with {:ok, operator} <- parse_operator(filter),
-         {:ok, filter_key} <- parse_filter_key(filter),
+         {:ok, second} <- parse_filter_second(operator, filter),
          {:ok, rest} <- parse_filter_rest(operator, filter) do
-      {:ok, [operator, filter_key | rest]}
+      {:ok, [operator, second | rest]}
     end
   end
 
   defp parse_operator(["is" | _rest]), do: {:ok, :is}
   defp parse_operator(["is_not" | _rest]), do: {:ok, :is_not}
   defp parse_operator(["matches" | _rest]), do: {:ok, :matches}
-  defp parse_operator(["does_not_match" | _rest]), do: {:ok, :does_not_match}
+  defp parse_operator(["matches_not" | _rest]), do: {:ok, :matches_not}
+  defp parse_operator(["matches_wildcard" | _rest]), do: {:ok, :matches_wildcard}
+  defp parse_operator(["matches_wildcard_not" | _rest]), do: {:ok, :matches_wildcard_not}
   defp parse_operator(["contains" | _rest]), do: {:ok, :contains}
-  defp parse_operator(["does_not_contain" | _rest]), do: {:ok, :does_not_contain}
+  defp parse_operator(["contains_not" | _rest]), do: {:ok, :contains_not}
+  defp parse_operator(["not" | _rest]), do: {:ok, :not}
+  defp parse_operator(["and" | _rest]), do: {:ok, :and}
+  defp parse_operator(["or" | _rest]), do: {:ok, :or}
   defp parse_operator(filter), do: {:error, "Unknown operator for filter '#{i(filter)}'."}
+
+  def parse_filter_second(:not, [_, filter | _rest]), do: parse_filter(filter)
+
+  def parse_filter_second(operator, [_, filters | _rest]) when operator in [:and, :or],
+    do: parse_filters(filters)
+
+  def parse_filter_second(_operator, filter), do: parse_filter_key(filter)
 
   defp parse_filter_key([_operator, filter_key | _rest] = filter) do
     parse_filter_key_string(filter_key, "Invalid filter '#{i(filter)}")
@@ -81,8 +108,21 @@ defmodule Plausible.Stats.Filters.QueryParser do
   defp parse_filter_key(filter), do: {:error, "Invalid filter '#{i(filter)}'."}
 
   defp parse_filter_rest(operator, filter)
-       when operator in [:is, :is_not, :matches, :does_not_match, :contains, :does_not_contain],
+       when operator in [
+              :is,
+              :is_not,
+              :matches,
+              :matches_not,
+              :matches_wildcard,
+              :matches_wildcard_not,
+              :contains,
+              :contains_not
+            ],
        do: parse_clauses_list(filter)
+
+  defp parse_filter_rest(operator, _filter)
+       when operator in [:not, :and, :or],
+       do: {:ok, []}
 
   defp parse_clauses_list([operation, filter_key, list] = filter) when is_list(list) do
     all_strings? = Enum.all?(list, &is_binary/1)
@@ -110,83 +150,110 @@ defmodule Plausible.Stats.Filters.QueryParser do
 
   defp parse_clauses_list(filter), do: {:error, "Invalid filter '#{i(filter)}'"}
 
-  defp parse_date(site, nil, nil), do: {:ok, today(site)}
-
-  defp parse_date(_site, date_string, nil) when is_binary(date_string) do
+  defp parse_date(_site, date_string, _date) when is_binary(date_string) do
     case Date.from_iso8601(date_string) do
       {:ok, date} -> {:ok, date}
       _ -> {:error, "Invalid date '#{date_string}'."}
     end
   end
 
-  defp parse_date(_site, _date_string, param_date), do: {:ok, param_date}
-
-  defp parse_date_range(_site, "day", date) do
-    {:ok, Date.range(date, date)}
+  defp parse_date(_site, _date_string, date) do
+    {:ok, date}
   end
 
-  defp parse_date_range(_site, "7d", last) do
-    first = last |> Date.add(-6)
-    {:ok, Date.range(first, last)}
+  defp parse_time_range(_site, date_range, _date, now) when date_range in ["realtime", "30m"] do
+    duration_minutes =
+      case date_range do
+        "realtime" -> 5
+        "30m" -> 30
+      end
+
+    first_datetime = DateTime.shift(now, minute: -duration_minutes)
+    last_datetime = DateTime.shift(now, second: 5)
+
+    {:ok, DateTimeRange.new!(first_datetime, last_datetime)}
   end
 
-  defp parse_date_range(_site, "30d", last) do
-    first = last |> Date.add(-30)
-    {:ok, Date.range(first, last)}
+  defp parse_time_range(site, "day", date, _now) do
+    {:ok, DateTimeRange.new!(date, date, site.timezone)}
   end
 
-  defp parse_date_range(_site, "month", today) do
-    last = today |> Date.end_of_month()
+  defp parse_time_range(site, "7d", date, _now) do
+    first = date |> Date.add(-6)
+    {:ok, DateTimeRange.new!(first, date, site.timezone)}
+  end
+
+  defp parse_time_range(site, "30d", date, _now) do
+    first = date |> Date.add(-30)
+    {:ok, DateTimeRange.new!(first, date, site.timezone)}
+  end
+
+  defp parse_time_range(site, "month", date, _now) do
+    last = date |> Date.end_of_month()
     first = last |> Date.beginning_of_month()
-    {:ok, Date.range(first, last)}
+    {:ok, DateTimeRange.new!(first, last, site.timezone)}
   end
 
-  defp parse_date_range(_site, "6mo", today) do
-    last = today |> Date.end_of_month()
+  defp parse_time_range(site, "6mo", date, _now) do
+    last = date |> Date.end_of_month()
 
     first =
       last
       |> Date.shift(month: -5)
       |> Date.beginning_of_month()
 
-    {:ok, Date.range(first, last)}
+    {:ok, DateTimeRange.new!(first, last, site.timezone)}
   end
 
-  defp parse_date_range(_site, "12mo", today) do
-    last = today |> Date.end_of_month()
+  defp parse_time_range(site, "12mo", date, _now) do
+    last = date |> Date.end_of_month()
 
     first =
       last
       |> Date.shift(month: -11)
       |> Date.beginning_of_month()
 
-    {:ok, Date.range(first, last)}
+    {:ok, DateTimeRange.new!(first, last, site.timezone)}
   end
 
-  defp parse_date_range(_site, "year", today) do
-    last = today |> Timex.end_of_year()
+  defp parse_time_range(site, "year", date, _now) do
+    last = date |> Timex.end_of_year()
     first = last |> Timex.beginning_of_year()
-    {:ok, Date.range(first, last)}
+    {:ok, DateTimeRange.new!(first, last, site.timezone)}
   end
 
-  defp parse_date_range(site, "all", today) do
-    start_date = Plausible.Sites.stats_start_date(site) || today
+  defp parse_time_range(site, "all", date, _now) do
+    start_date = Plausible.Sites.stats_start_date(site) || date
 
-    {:ok, Date.range(start_date, today)}
+    {:ok, DateTimeRange.new!(start_date, date, site.timezone)}
   end
 
-  defp parse_date_range(_site, [from_date_string, to_date_string], _date)
-       when is_binary(from_date_string) and is_binary(to_date_string) do
-    with {:ok, from_date} <- Date.from_iso8601(from_date_string),
-         {:ok, to_date} <- Date.from_iso8601(to_date_string) do
-      {:ok, Date.range(from_date, to_date)}
-    else
-      _ -> {:error, "Invalid date_range '#{i([from_date_string, to_date_string])}'."}
+  defp parse_time_range(site, [from, to], _date, _now)
+       when is_binary(from) and is_binary(to) do
+    case date_range_from_date_strings(site, from, to) do
+      {:ok, date_range} -> {:ok, date_range}
+      {:error, _} -> date_range_from_timestamps(from, to)
     end
   end
 
-  defp parse_date_range(_site, unknown, _),
+  defp parse_time_range(_site, unknown, _date, _now),
     do: {:error, "Invalid date_range '#{i(unknown)}'."}
+
+  defp date_range_from_date_strings(site, from, to) do
+    with {:ok, from_date} <- Date.from_iso8601(from),
+         {:ok, to_date} <- Date.from_iso8601(to) do
+      {:ok, DateTimeRange.new!(from_date, to_date, site.timezone)}
+    end
+  end
+
+  defp date_range_from_timestamps(from, to) do
+    with {:ok, from_datetime, _offset} <- DateTime.from_iso8601(from),
+         {:ok, to_datetime, _offset} <- DateTime.from_iso8601(to) do
+      {:ok, DateTimeRange.new!(from_datetime, to_datetime)}
+    else
+      _ -> {:error, "Invalid date_range '#{i([from, to])}'."}
+    end
+  end
 
   defp today(site), do: DateTime.now!(site.timezone) |> DateTime.to_date()
 
@@ -247,18 +314,15 @@ defmodule Plausible.Stats.Filters.QueryParser do
   defp parse_order_direction(entry), do: {:error, "Invalid order_by entry '#{i(entry)}'."}
 
   defp parse_include(include) when is_map(include) do
-    with {:ok, parsed_include_list} <- parse_list(include, &parse_include_value/1) do
-      include = Map.merge(@default_include, Enum.into(parsed_include_list, %{}))
-
-      {:ok, include}
-    end
+    {:ok, Map.merge(@default_include, atomize_keys(include))}
   end
 
-  defp parse_include_value({"imports", value}) when is_boolean(value),
-    do: {:ok, {:imports, value}}
+  defp parse_pagination(pagination) when is_map(pagination) do
+    {:ok, Map.merge(@default_pagination, atomize_keys(pagination))}
+  end
 
-  defp parse_include_value({"time_labels", value}) when is_boolean(value),
-    do: {:ok, {:time_labels, value}}
+  defp atomize_keys(map),
+    do: Map.new(map, fn {key, value} -> {String.to_existing_atom(key), value} end)
 
   defp parse_filter_key_string(filter_key, error_message \\ "") do
     case filter_key do
@@ -321,7 +385,37 @@ defmodule Plausible.Stats.Filters.QueryParser do
     end
   end
 
-  defp validate_goal_filters(query) do
+  @only_toplevel ["event:goal", "event:hostname"]
+  defp validate_toplevel_only_filter_dimension(query) do
+    not_toplevel = Filters.dimensions_used_in_filters(query.filters, min_depth: 1)
+
+    if Enum.any?(not_toplevel, &(&1 in @only_toplevel)) do
+      {:error,
+       "Invalid filters. Dimension `#{List.first(not_toplevel)}` can only be filtered at the top level."}
+    else
+      :ok
+    end
+  end
+
+  @special_metrics [:conversion_rate, :group_conversion_rate]
+  defp validate_special_metrics_filters(query) do
+    special_metric? = Enum.any?(@special_metrics, &(&1 in query.metrics))
+
+    deep_custom_property? =
+      query.filters
+      |> Filters.dimensions_used_in_filters(min_depth: 1)
+      |> Enum.any?(fn dimension -> String.starts_with?(dimension, "event:props:") end)
+
+    if special_metric? and deep_custom_property? do
+      {:error,
+       "Invalid filters. When `conversion_rate` or `group_conversion_rate` metrics are used, custom property filters can only be used on top level."}
+    else
+      :ok
+    end
+  end
+
+  defp validate_filtered_goals_exist(query) do
+    # Note: Only works since event:goal is allowed as a top level filter
     goal_filter_clauses =
       Enum.flat_map(query.filters, fn
         [:is, "event:goal", clauses] -> clauses
@@ -358,7 +452,7 @@ defmodule Plausible.Stats.Filters.QueryParser do
   defp validate_custom_props_access(_site, query, allowed_props) do
     valid? =
       query.filters
-      |> Enum.map(fn [_operation, filter_key | _rest] -> filter_key end)
+      |> Filters.dimensions_used_in_filters()
       |> Enum.concat(query.dimensions)
       |> Enum.all?(fn
         "event:props:" <> prop -> prop in allowed_props
@@ -380,7 +474,7 @@ defmodule Plausible.Stats.Filters.QueryParser do
 
   defp validate_metric(metric, query) when metric in [:conversion_rate, :group_conversion_rate] do
     if Enum.member?(query.dimensions, "event:goal") or
-         not is_nil(Query.get_filter(query, "event:goal")) do
+         Filters.filtering_on_dimension?(query, "event:goal") do
       :ok
     else
       {:error, "Metric `#{metric}` can only be queried with event:goal filters or dimensions."}
@@ -389,7 +483,7 @@ defmodule Plausible.Stats.Filters.QueryParser do
 
   defp validate_metric(:views_per_visit = metric, query) do
     cond do
-      not is_nil(Query.get_filter(query, "event:page")) ->
+      Filters.filtering_on_dimension?(query, "event:page") ->
         {:error, "Metric `#{metric}` cannot be queried with a filter on `event:page`."}
 
       length(query.dimensions) > 0 ->

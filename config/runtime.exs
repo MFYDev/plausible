@@ -19,9 +19,11 @@ config_dir = System.get_env("CONFIG_DIR", "/run/secrets")
 log_format =
   get_var_from_path_or_env(config_dir, "LOG_FORMAT", "standard")
 
+default_log_level = if config_env() == :ce, do: "notice", else: "warning"
+
 log_level =
   config_dir
-  |> get_var_from_path_or_env("LOG_LEVEL", "warning")
+  |> get_var_from_path_or_env("LOG_LEVEL", default_log_level)
   |> String.to_existing_atom()
 
 config :logger,
@@ -61,12 +63,16 @@ listen_ip =
   )
 
 # System.get_env does not accept a non string default
-port = get_var_from_path_or_env(config_dir, "PORT") || 8000
+http_port =
+  get_int_from_path_or_env(config_dir, "HTTP_PORT") ||
+    get_int_from_path_or_env(config_dir, "PORT", 8000)
+
+https_port = get_int_from_path_or_env(config_dir, "HTTPS_PORT")
 
 base_url = get_var_from_path_or_env(config_dir, "BASE_URL")
 
 if !base_url do
-  raise "BASE_URL configuration option is required. See https://github.com/plausible/community-edition/tree/v2.1.0?tab=readme-ov-file#quick-start"
+  raise "BASE_URL configuration option is required. See https://github.com/plausible/community-edition/wiki/configuration#base_url"
 end
 
 base_url = URI.parse(base_url)
@@ -79,10 +85,10 @@ secret_key_base = get_var_from_path_or_env(config_dir, "SECRET_KEY_BASE", nil)
 
 case secret_key_base do
   nil ->
-    raise "SECRET_KEY_BASE configuration option is required. See https://github.com/plausible/community-edition/tree/v2.1.0?tab=readme-ov-file#quick-start"
+    raise "SECRET_KEY_BASE configuration option is required. See https://github.com/plausible/community-edition/wiki/configuration#secret_key_base"
 
   key when byte_size(key) < 32 ->
-    raise "SECRET_KEY_BASE must be at least 32 bytes long. See https://github.com/plausible/community-edition/tree/v2.1.0?tab=readme-ov-file#quick-start"
+    raise "SECRET_KEY_BASE must be at least 32 bytes long. See https://github.com/plausible/community-edition/wiki/configuration#secret_key_base"
 
   _ ->
     nil
@@ -99,8 +105,8 @@ super_admin_user_ids =
   |> Enum.filter(& &1)
 
 env = get_var_from_path_or_env(config_dir, "ENVIRONMENT", "prod")
-mailer_adapter = get_var_from_path_or_env(config_dir, "MAILER_ADAPTER", "Bamboo.SMTPAdapter")
-mailer_email = get_var_from_path_or_env(config_dir, "MAILER_EMAIL", "hello@plausible.local")
+mailer_adapter = get_var_from_path_or_env(config_dir, "MAILER_ADAPTER", "Bamboo.Mua")
+mailer_email = get_var_from_path_or_env(config_dir, "MAILER_EMAIL", "plausible@#{base_url.host}")
 
 mailer_email =
   if mailer_name = get_var_from_path_or_env(config_dir, "MAILER_NAME") do
@@ -154,14 +160,14 @@ totp_vault_key =
           raise ArgumentError, """
           TOTP_VAULT_KEY must be Base64 encoded 32 bytes, e.g. `openssl rand -base64 32`.
           Got Base64 encoded #{byte_size(totp_vault_key)} bytes.
-          More info: https://github.com/plausible/community-edition/tree/v2.1.1#quick-start
+          More info: https://github.com/plausible/community-edition/wiki/configuration#totp_vault_key
           """
         end
 
       :error ->
         raise ArgumentError, """
         TOTP_VAULT_KEY must be Base64 encoded 32 bytes, e.g. `openssl rand -base64 32`
-        More info: https://github.com/plausible/community-edition/tree/v2.1.1#quick-start
+        More info: https://github.com/plausible/community-edition/wiki/configuration#totp_vault_key
         """
     end
   else
@@ -191,11 +197,14 @@ build_metadata =
       _fallback = %{}
   end
 
+app_host = get_var_from_path_or_env(config_dir, "APP_HOST")
+
 runtime_metadata = [
   version: get_in(build_metadata, ["labels", "org.opencontainers.image.version"]),
   commit: get_in(build_metadata, ["labels", "org.opencontainers.image.revision"]),
   created: get_in(build_metadata, ["labels", "org.opencontainers.image.created"]),
-  tags: get_in(build_metadata, ["tags"])
+  tags: get_in(build_metadata, ["tags"]),
+  app_host: app_host
 ]
 
 config :plausible, :runtime_metadata, runtime_metadata
@@ -232,7 +241,8 @@ maxmind_edition = get_var_from_path_or_env(config_dir, "MAXMIND_EDITION", "GeoLi
 data_dir = get_var_from_path_or_env(config_dir, "DATA_DIR")
 persistent_cache_dir = get_var_from_path_or_env(config_dir, "PERSISTENT_CACHE_DIR")
 
-data_dir = data_dir || persistent_cache_dir
+# DEFAULT_DATA_DIR comes from the container image, please see our Dockerfile
+data_dir = data_dir || persistent_cache_dir || System.get_env("DEFAULT_DATA_DIR")
 persistent_cache_dir = persistent_cache_dir || data_dir
 
 enable_email_verification =
@@ -254,7 +264,7 @@ disable_registration =
   |> String.to_existing_atom()
 
 if disable_registration not in [true, false, :invite_only] do
-  raise "DISABLE_REGISTRATION must be one of `true`, `false`, or `invite_only`. See https://github.com/plausible/community-edition/tree/v2.1.0?tab=readme-ov-file#disable_registration"
+  raise "DISABLE_REGISTRATION must be one of `true`, `false`, or `invite_only`. See https://github.com/plausible/community-edition/wiki/configuration#disable_registration"
 end
 
 hcaptcha_sitekey = get_var_from_path_or_env(config_dir, "HCAPTCHA_SITEKEY")
@@ -307,17 +317,102 @@ config :plausible, :selfhost,
   enable_email_verification: enable_email_verification,
   disable_registration: disable_registration
 
+default_http_opts = [
+  transport_options: [max_connections: :infinity],
+  protocol_options: [max_request_line_length: 8192, max_header_value_length: 8192]
+]
+
 config :plausible, PlausibleWeb.Endpoint,
   url: [scheme: base_url.scheme, host: base_url.host, path: base_url.path, port: base_url.port],
-  http: [
-    port: port,
-    ip: listen_ip,
-    transport_options: [max_connections: :infinity],
-    protocol_options: [max_request_line_length: 8192, max_header_value_length: 8192]
-  ],
+  http: [port: http_port, ip: listen_ip] ++ default_http_opts,
   secret_key_base: secret_key_base,
   websocket_url: websocket_url,
   secure_cookie: secure_cookie
+
+# maybe enable HTTPS in CE
+if config_env() in [:ce, :ce_dev, :ce_test] do
+  if https_port do
+    # the following configuration is based on https://wiki.mozilla.org/Security/Server_Side_TLS#Intermediate_compatibility_.28recommended.29
+    # except we enforce the cipher and ecc order and only use ciphers with support
+    # for ecdsa certificates since that's what certbot generates by default
+    https_opts =
+      [
+        port: https_port,
+        ip: listen_ip,
+        transport_options: [socket_opts: [log_level: :warning]],
+        versions: [:"tlsv1.2", :"tlsv1.3"],
+        honor_cipher_order: true,
+        honor_ecc_order: true,
+        eccs: [:x25519, :secp256r1, :secp384r1],
+        supported_groups: [:x25519, :secp256r1, :secp384r1],
+        ciphers: [
+          # Mozilla recommended cipher suites (TLS 1.3)
+          ~c"TLS_AES_128_GCM_SHA256",
+          ~c"TLS_AES_256_GCM_SHA384",
+          ~c"TLS_CHACHA20_POLY1305_SHA256",
+          # Mozilla recommended cipher suites (TLS 1.2)
+          ~c"ECDHE-ECDSA-AES128-GCM-SHA256",
+          ~c"ECDHE-ECDSA-AES256-GCM-SHA384",
+          ~c"ECDHE-ECDSA-CHACHA20-POLY1305"
+        ]
+      ]
+
+    https_opts = Config.Reader.merge(default_http_opts, https_opts)
+    config :plausible, PlausibleWeb.Endpoint, https: https_opts
+
+    domain = base_url.host
+
+    # do stricter checking in CE prod
+    if config_env() == :ce do
+      domain_is_ip? =
+        case :inet.parse_address(to_charlist(domain)) do
+          {:ok, _address} -> true
+          _other -> false
+        end
+
+      if domain_is_ip? do
+        raise ArgumentError, "Cannot generate TLS certificates for IP address #{inspect(domain)}"
+      end
+
+      domain_is_local? = domain == "localhost" or not String.contains?(domain, ".")
+
+      if domain_is_local? do
+        raise ArgumentError,
+              "Cannot generate TLS certificates for local domain #{inspect(domain)}"
+      end
+
+      unless http_port == 80 do
+        Logger.warning("""
+        HTTPS is enabled but the HTTP port is not 80. \
+        This will prevent automatic TLS certificate issuance as ACME validates the domain on port 80.\
+        """)
+      end
+    end
+
+    acme_directory_url =
+      get_var_from_path_or_env(
+        config_dir,
+        "ACME_DIRECTORY_URL",
+        "https://acme-v02.api.letsencrypt.org/directory"
+      )
+
+    db_folder = Path.join(data_dir || System.tmp_dir!(), "site_encrypt")
+
+    email =
+      case mailer_email do
+        {_, email} -> email
+        email when is_binary(email) -> email
+      end
+
+    config :plausible, :selfhost,
+      site_encrypt: [
+        domain: domain,
+        email: email,
+        db_folder: db_folder,
+        directory_url: acme_directory_url
+      ]
+  end
+end
 
 db_maybe_ipv6 =
   if get_var_from_path_or_env(config_dir, "ECTO_IPV6") do
@@ -352,7 +447,7 @@ if db_socket_dir = get_var_from_path_or_env(config_dir, "DATABASE_SOCKET_DIR") d
   """)
 end
 
-db_cacertfile = get_var_from_path_or_env(config_dir, "DATABASE_CACERTFILE", CAStore.file_path())
+db_cacertfile = get_var_from_path_or_env(config_dir, "DATABASE_CACERTFILE")
 %URI{host: db_host} = db_uri = URI.parse(db_url)
 db_socket_dir? = String.starts_with?(db_host, "%2F") or db_host == ""
 
@@ -381,14 +476,11 @@ if db_socket_dir? do
 else
   config :plausible, Plausible.Repo,
     url: db_url,
-    socket_options: db_maybe_ipv6,
-    ssl_opts: [
-      cacertfile: db_cacertfile,
-      verify: :verify_peer,
-      customize_hostname_check: [
-        match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-      ]
-    ]
+    socket_options: db_maybe_ipv6
+
+  if db_cacertfile do
+    config :plausible, Plausible.Repo, ssl: [cacertfile: db_cacertfile]
+  end
 end
 
 sentry_app_version = runtime_metadata[:version] || app_version
@@ -397,7 +489,10 @@ config :sentry,
   dsn: sentry_dsn,
   environment_name: env,
   release: sentry_app_version,
-  tags: %{app_version: sentry_app_version},
+  tags: %{
+    app_version: sentry_app_version,
+    app_host: app_host
+  },
   client: Plausible.Sentry.Client,
   send_max_attempts: 1,
   before_send: {Plausible.SentryFilter, :before_send}
@@ -538,9 +633,29 @@ case mailer_adapter do
   "Bamboo.Mua" ->
     config :plausible, Plausible.Mailer, adapter: Bamboo.Mua
 
+    # prevents common problems with Erlang's TLS v1.3
+    middlebox_comp_mode =
+      get_var_from_path_or_env(config_dir, "SMTP_MIDDLEBOX_COMP_MODE", "false")
+
+    middlebox_comp_mode = String.to_existing_atom(middlebox_comp_mode)
+    config :plausible, Plausible.Mailer, ssl: [middlebox_comp_mode: middlebox_comp_mode]
+
     if relay = get_var_from_path_or_env(config_dir, "SMTP_HOST_ADDR") do
-      port = get_int_from_path_or_env(config_dir, "SMTP_HOST_PORT", 25)
-      config :plausible, Plausible.Mailer, relay: relay, port: port
+      port = get_int_from_path_or_env(config_dir, "SMTP_HOST_PORT", 587)
+
+      ssl_enabled =
+        if ssl_enabled = get_var_from_path_or_env(config_dir, "SMTP_HOST_SSL_ENABLED") do
+          String.to_existing_atom(ssl_enabled)
+        end
+
+      protocol =
+        cond do
+          ssl_enabled -> :ssl
+          is_nil(ssl_enabled) and port == 465 -> :ssl
+          true -> :tcp
+        end
+
+      config :plausible, Plausible.Mailer, protocol: protocol, relay: relay, port: port
     end
 
     username = get_var_from_path_or_env(config_dir, "SMTP_USER_NAME")
@@ -589,6 +704,8 @@ base_cron = [
   # Every day at 1am
   {"0 1 * * *", Plausible.Workers.CleanInvitations},
   # Every 2 hours
+  {"30 */2 * * *", Plausible.Workers.CleanUserSessions},
+  # Every 2 hours
   {"0 */2 * * *", Plausible.Workers.ExpireDomainChangeTransitions},
   # Daily at midnight
   {"0 0 * * *", Plausible.Workers.LocationsSync}
@@ -619,6 +736,7 @@ base_queues = [
   check_stats_emails: 1,
   site_setup_emails: 1,
   clean_invitations: 1,
+  clean_user_sessions: 1,
   analytics_imports: 1,
   analytics_exports: 1,
   notify_exported_analytics: 1,
@@ -779,11 +897,6 @@ config :plausible, Plausible.PromEx,
   drop_metrics_groups: [],
   grafana: :disabled,
   metrics_server: :disabled
-
-config :plausible, Plausible.Verification,
-  enabled?:
-    get_var_from_path_or_env(config_dir, "VERIFICATION_ENABLED", "false")
-    |> String.to_existing_atom()
 
 config :plausible, Plausible.Verification.Checks.Installation,
   token: get_var_from_path_or_env(config_dir, "BROWSERLESS_TOKEN", "dummy_token"),
